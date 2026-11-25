@@ -99,7 +99,7 @@ body {
   display: flex; flex-direction: column; gap: 10px; min-height: 0;
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
 }
-.mapwrap { position: relative; min-height: 0; }
+.mapwrap { position: relative; min-height: 0; overflow: hidden; }
 #map { position: absolute; inset: 0; background: #2a3138; }
 
 /* ---------- カード ---------- */
@@ -203,8 +203,9 @@ body {
 .map-btn { box-shadow: var(--shadow); min-width: 130px; min-height: 48px; font-size: 15px; padding: 6px 10px; }
 .map-btn.on { background: var(--go); color: var(--go-text); border-color: var(--go); }
 .map-hint {
-  position: absolute; top: 70px; left: 50%; transform: translateX(-50%); z-index: 600;
-  background: var(--warn); color: var(--warn-text); padding: 10px 18px; border-radius: 12px;
+  position: absolute; top: 66px; left: 50%; transform: translateX(-50%); z-index: 600;
+  width: max-content; max-width: calc(100% - 360px); min-width: 200px; text-align: center;
+  background: var(--warn); color: var(--warn-text); padding: 10px 14px; border-radius: 12px; font-size: 15px;
   font-weight: 800; animation: pulse 1.2s infinite;
 }
 .map-fallback {
@@ -250,7 +251,7 @@ body {
 
 
 /* ---------- 方位リング ---------- */
-.nav-ring { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 450; pointer-events: none; overflow: visible; }
+.nav-ring { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 450; pointer-events: none; overflow: hidden; }
 .rg-circle { fill: none; stroke: #fff; stroke-width: 3; filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 2px #000); }
 .rg-tick { stroke: #fff; stroke-width: 2; filter: drop-shadow(0 0 1.5px #000); }
 .rg-tick10 { stroke-width: 3.5; }

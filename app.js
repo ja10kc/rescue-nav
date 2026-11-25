@@ -64,7 +64,8 @@
     elevCache: LS.get('elevCache', {}),
     pts: LS.get('pts', null),          // 登録地点 {points, fileName, importedAt}
     ptsPrev: LS.get('ptsPrev', null),  // 1つ前の一覧（元に戻す用）
-    sel: null,                         // 検索結果から選んだ地点
+    sel: null,                         // 検索結果・地図で選んだ地点
+    mapPick: false,                    // 地図タップで現場を指定中
     pos: null,              // 最新の自機位置
     lastHeading: null,
     gpsWatch: null,
@@ -310,6 +311,7 @@
 
   function clearSel() {
     if (!S.sel) return;
+    if (S.sel.src === '地図') removePickMarker();
     S.sel = null;
     document.querySelectorAll('.q-item.sel').forEach((b) => b.classList.remove('sel'));
   }
@@ -413,10 +415,59 @@
     renderSearch();
   }
 
+  /* ---------- 地図で指定（タップで位置を決め、ピンのドラッグで微調整） ---------- */
+  let pickMarker = null, pickPrevFollow = null;
+  function removePickMarker() {
+    if (pickMarker && map) map.removeLayer(pickMarker);
+    pickMarker = null;
+  }
+  function startMapPick() {
+    if (!map) { toast('地図が利用できません（オフラインで地図を読み込めていません）', 3500); return; }
+    if (S.mapPick) { // もう一度押す → 指定をやめる
+      if (S.sel && S.sel.src === '地図') { clearSel(); updatePreview(); }
+      stopMapPick();
+      return;
+    }
+    S.mapPick = true;
+    simTapArmed = false;
+    if (pickPrevFollow === null) pickPrevFollow = S.follow;
+    if (S.follow) setFollow(false); // 指定中は地図を自機に追従させない
+    $('mapTapHint').textContent = '地図をタップして現場を指定（ピンはドラッグで微調整）';
+    $('mapTapHint').hidden = false;
+    const b = $('mapPickBtn');
+    b.textContent = '✖ 地図での指定をやめる';
+    b.classList.add('btn-warn');
+  }
+  function stopMapPick() {
+    const was = S.mapPick;
+    S.mapPick = false;
+    if (!simTapArmed) $('mapTapHint').hidden = true;
+    const b = $('mapPickBtn');
+    b.textContent = '🗺 地図をタップして指定';
+    b.classList.remove('btn-warn');
+    removePickMarker();
+    if (was && pickPrevFollow) setFollow(true); // 指定前に追従していたら元に戻す
+    pickPrevFollow = null;
+  }
+  function pickAt(lat, lon) {
+    clearDMS(); clearDD();
+    if ($('q').value) { $('q').value = ''; gsi = { q: '', state: 'idle', list: [] }; renderSearch(); }
+    S.sel = { lat, lon, name: '', note: '', pref: '', type: '', src: '地図' };
+    if (!pickMarker) {
+      pickMarker = L.marker([lat, lon], {
+        icon: L.divIcon({ className: 'tg-icon', html: TG_SVG('#19c37d'), iconSize: [46, 46], iconAnchor: [23, 23] }),
+        draggable: true, autoPan: true, zIndexOffset: 900, keyboard: false,
+      }).addTo(map).bindTooltip('指定地点', { permanent: true, direction: 'right', offset: [22, 0], className: 'map-label' });
+      pickMarker.on('dragend', () => { const ll = pickMarker.getLatLng(); pickAt(ll.lat, ll.lng); });
+    } else pickMarker.setLatLng([lat, lon]);
+    updatePreview();
+    $('preview').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
   function selectItem(i) {
     const it = qItems[i];
     if (!it) return;
-    clearDMS(); clearDD();
+    clearDMS(); clearDD(); removePickMarker();
     S.sel = { lat: it.lat, lon: it.lon, name: it.name || '', note: it.note || '', pref: it.pref || '', type: it.type || '', src: it.src };
     document.querySelectorAll('.q-item').forEach((b) => b.classList.toggle('sel', +b.dataset.i === i));
     $('q').blur();
@@ -545,6 +596,7 @@
     $('targetForm').hidden = true;
     $('targetView').hidden = false;
     clearDMS(); clearDD(); clearSearch();
+    stopMapPick();
     S.pending = null;
     document.activeElement && document.activeElement.blur && document.activeElement.blur();
   }
@@ -584,11 +636,15 @@
     }
     S.pending = { lat: r.lat, lon: r.lon };
     if (sel) Object.assign(S.pending, { name: sel.name || '', note: sel.note || '', pref: sel.pref || '', type: sel.type || '' });
-    const fmtName = sel ? `検索結果（${sel.src}）` : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
+    const fmtName = sel ? (sel.src === '地図' ? '地図で指定' : `検索結果（${sel.src}）`) : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
     let extra = '';
+    if (S.pos) {
+      const d0 = Geo.inverse(S.pos.lat, S.pos.lon, r.lat, r.lon);
+      extra += `<div class="small">自機から <b>${(d0.distance / 1000).toFixed(2)} km</b>（方位 <b>${fmtBrg(d0.bearing)}</b>）</div>`;
+    }
     if (S.target) {
       const d = Geo.inverse(S.target.lat, S.target.lon, r.lat, r.lon);
-      extra = `<div class="small muted">現在の現場から ${(d.distance / 1000).toFixed(2)} km（${Math.round(d.bearing)}°方向）</div>`;
+      extra += `<div class="small muted">現在の現場から ${(d.distance / 1000).toFixed(2)} km（${Math.round(d.bearing)}°方向）</div>`;
     }
     pv.className = 'preview ok';
     pv.innerHTML = `
@@ -929,6 +985,7 @@
     buildRing();
 
     // ドラッグで自由にスクロール → 追従OFF（「現在位置に戻る」で復帰）
+    window.__rnMap = map; // 動作確認用
     map.on('dragstart', () => { if (S.follow) setFollow(false); });
     map.on('zoomend', () => { if (S.follow && !navBusy) navView(false); });
     map.on('move zoom rotate viewreset resize', drawRing);
@@ -937,6 +994,8 @@
         simTapArmed = false; $('mapTapHint').hidden = true;
         simPlace(e.latlng.lat, e.latlng.lng);
         toast('自機の模擬位置を配置しました');
+      } else if (S.mapPick) {
+        pickAt(e.latlng.lat, e.latlng.lng);
       }
     });
     setFollow(S.follow);
@@ -944,6 +1003,17 @@
     updateMapObjects();
     if (S.target && !S.pos) fitBoth(true);
     window.addEventListener('resize', () => setTimeout(() => { map.invalidateSize(); if (S.follow) navView(false); drawRing(); }, 200));
+    // 地図の表示領域が変わったとき（テストモードの帯の表示・画面回転など）に、地図の大きさを測り直す
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => {
+        const sz = map.getSize(), el = $('map');
+        if (sz.x !== el.clientWidth || sz.y !== el.clientHeight) {
+          map.invalidateSize({ pan: false });
+          if (S.follow) navView(false);
+        }
+        drawRing();
+      }).observe($('map'));
+    }
   }
 
   function setLayer(k) {
@@ -1443,6 +1513,7 @@
       if (b) selectItem(parseInt(b.dataset.i, 10));
     });
     // 登録地点
+    $('mapPickBtn').onclick = startMapPick;
     $('ptsLoadBtn').onclick = () => $('ptsFile').click();
     $('ptsFile').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; importPts(f); });
     $('ptsUndoBtn').onclick = undoPts;
@@ -1481,7 +1552,9 @@
     };
     $('simTapBtn').onclick = () => {
       if (!map) { toast('地図が利用できません。座標入力で配置してください'); return; }
-      simTapArmed = true; $('mapTapHint').hidden = false;
+      simTapArmed = true;
+      $('mapTapHint').textContent = '地図をタップして自機の位置を指定';
+      $('mapTapHint').hidden = false;
     };
     $('simAutoStartBtn').onclick = simAutoStart;
     $('simRunBtn').onclick = simStart;
