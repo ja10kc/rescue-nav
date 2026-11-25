@@ -425,7 +425,7 @@
   }
 
   /* =========================================================
-   * 登録地点（協議会一覧）の読み込み・元に戻す・書き出し
+   * 登録地点（場外一覧表）の読み込み・元に戻す・書き出し
    * ========================================================= */
   function savePts() {
     const ok1 = LS.trySet('pts', S.pts), ok2 = LS.trySet('ptsPrev', S.ptsPrev);
@@ -1366,12 +1366,40 @@
     }
     toast(ok ? `コピーしました：${txt}` : `コピーできませんでした：${txt}`, 3000);
   }
+  /**
+   * Googleマップを開く
+   *  ホーム画面アプリ（PWA）から https のリンクを開くと、アプリ内ブラウザ（左上に×）が残ってしまうため、
+   *  Googleマップ「アプリ」を専用URL（comgooglemaps://）で直接起動する。
+   *  アプリが入っていない場合は、Appleマップ（maps://）で開くか確認する。
+   */
   function openGoogleMaps() {
     const t = S.target;
     if (!t) return;
-    const url = `https://www.google.com/maps/search/?api=1&query=${t.lat.toFixed(6)},${t.lon.toFixed(6)}`;
-    const w = window.open(url, '_blank');
-    if (!w) location.href = url; // ポップアップブロック時
+    const ll = `${t.lat.toFixed(6)},${t.lon.toFixed(6)}`;
+    const appUrl = `comgooglemaps://?q=${ll}&center=${ll}&zoom=15`;
+    const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (!isApple) { // PCでの確認用：通常のタブで開く
+      window.open(`https://www.google.com/maps/search/?api=1&query=${ll}`, '_blank');
+      return;
+    }
+    let left = false;
+    const mark = () => { left = true; };
+    document.addEventListener('visibilitychange', mark);
+    window.addEventListener('pagehide', mark);
+    window.addEventListener('blur', mark);
+    location.href = appUrl;
+    setTimeout(async () => {
+      document.removeEventListener('visibilitychange', mark);
+      window.removeEventListener('pagehide', mark);
+      window.removeEventListener('blur', mark);
+      if (left || document.visibilityState !== 'visible') return; // アプリが開いた
+      const ok = await confirmModal('Googleマップアプリを開けませんでした',
+        'このiPadにGoogleマップアプリが入っていない可能性があります。<br>代わりに<b>Appleマップ</b>で現場を開きますか？', 'Appleマップで開く');
+      if (ok) {
+        const name = encodeURIComponent(t.name || '現場');
+        location.href = `maps://?ll=${ll}&q=${name}`;
+      }
+    }, 2000);
   }
   function applyTheme(th) {
     S.theme = th; LS.set('theme', th);
