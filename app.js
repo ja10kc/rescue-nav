@@ -37,6 +37,7 @@
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' },
     },
   };
+  const TEMPLATE_FILE = 'touroku-template.xlsx';
   const LEAFLET_LOCAL = './';
   const LEAFLET_CDN = 'https://unpkg.com/leaflet@1.9.4/dist/';
   const ROTATE_LOCAL = 'leaflet-rotate.js';
@@ -46,6 +47,7 @@
   const LS = {
     get(k, d) { try { const v = localStorage.getItem('rn_' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('rn_' + k, JSON.stringify(v)); } catch (e) { /* 容量超過等は無視 */ } },
+    trySet(k, v) { try { localStorage.setItem('rn_' + k, JSON.stringify(v)); return true; } catch (e) { return false; } },
   };
 
   /* ---------- 状態 ---------- */
@@ -60,6 +62,9 @@
     layer: LS.get('layer', 'std'),
     theme: LS.get('theme', 'dark'),
     elevCache: LS.get('elevCache', {}),
+    pts: LS.get('pts', null),          // 登録地点 {points, fileName, importedAt}
+    ptsPrev: LS.get('ptsPrev', null),  // 1つ前の一覧（元に戻す用）
+    sel: null,                         // 検索結果から選んだ地点
     pos: null,              // 最新の自機位置
     lastHeading: null,
     gpsWatch: null,
@@ -127,6 +132,10 @@
       setText('tLatDMS', Geo.formatDMS(t.lat, true));
       setText('tLonDMS', Geo.formatDMS(t.lon, false));
       setText('targetSetAt', `設定 ${hms(t.setAt)}`);
+      setText('tName', t.name || '');
+      $('tName').hidden = !t.name;
+      setText('tNote', t.note ? '備考：' + t.note : '');
+      $('tNote').hidden = !t.note;
     } else {
       setText('targetSetAt', '');
     }
@@ -144,7 +153,7 @@
     if (S.history.length === 0) { ul.hidden = true; ul.innerHTML = ''; return; }
     ul.innerHTML = S.history.map((h, i) => `
       <li><button type="button" data-idx="${i}">
-        <span class="h-time">${i === 0 ? '直前 ' : ''}設定 ${hms(h.setAt)}</span>
+        <span class="h-time">${i === 0 ? '直前 ' : ''}設定 ${hms(h.setAt)}${h.name ? '　' + esc(h.name) : ''}</span>
         <span class="h-coord">${esc(ddText(h))}</span><br>
         <span class="h-coord small">${esc(dmsText(h))}</span>
       </button></li>`).join('');
@@ -196,10 +205,10 @@
   function onDDInput(e) {
     const el = e.target, id = el.id, raw = el.value;
     if (/[^\d.]/.test(raw) && raw.trim().length > 4 && Geo.looksLikePair(raw)) {
-      el.value = ''; clearDD(); $('inPair').value = raw; updatePreview(); return;
+      el.value = ''; clearDD(); pastePair(raw); return;
     }
     if (dmsAnyFilled()) clearDMS();
-    if ($('inPair').value) $('inPair').value = '';
+    clearSel();
     const isInt = /I$/.test(id);
     if (isInt && raw.includes('.')) {
       // 「35.360556」をまとめて打った／貼り付けた → 整数部と小数部に振り分け
@@ -233,13 +242,13 @@
     if (/[^\d.]/.test(raw) && raw.trim().length > 4) {
       if (Geo.looksLikePair(raw)) {
         el.value = ''; clearDMS();
-        $('inPair').value = raw; updatePreview(); return;
+        pastePair(raw); return;
       }
       const nums = raw.match(/\d+(?:\.\d+)?/g) || [];
       if (nums.length === 3 && /D$/.test(id)) {
         const k = id.slice(0, 3);
         $(k + 'D').value = nums[0]; $(k + 'M').value = nums[1]; $(k + 'S').value = nums[2];
-        $('inPair').value = '';
+        clearSel();
         updatePreview(); return;
       }
     }
@@ -258,7 +267,7 @@
       if (/M$/.test(id) && /^[6-9]/.test(v)) v = '0' + v;                  // 分「7」→「07」
     }
     if (v !== raw) el.value = v;
-    if ($('inPair').value) $('inPair').value = '';
+    clearSel();
     if (ddAnyFilled()) clearDD();
     el.classList.remove('bad');
 
@@ -289,12 +298,245 @@
     }
   }
 
+  /* =========================================================
+   * 名称検索（登録地点：端末内／地理院：ネット）
+   * ========================================================= */
+  const GSI_SEARCH = (q) => `https://msearch.gsi.go.jp/address-search/AddressSearch?q=${encodeURIComponent(q)}`;
+  let qItems = [], gsi = { q: '', state: 'idle', list: [] }, gsiSeq = 0, qTimer = null;
+
+  const searchFrom = () => (S.pos ? { lat: S.pos.lat, lon: S.pos.lon } : S.target ? { lat: S.target.lat, lon: S.target.lon } : null);
+  const ptsList = () => (S.pts && S.pts.points) || [];
+  const qnorm = (s) => String(s || '').normalize('NFKC').toLowerCase().replace(/[\s　]/g, '');
+
+  function clearSel() {
+    if (!S.sel) return;
+    S.sel = null;
+    document.querySelectorAll('.q-item.sel').forEach((b) => b.classList.remove('sel'));
+  }
+  function clearSearch() {
+    S.sel = null;
+    $('q').value = '';
+    gsi = { q: '', state: 'idle', list: [] };
+    renderSearch();
+  }
+  /** 座標文字列が貼り付けられた → 検索欄に入れて座標として選択 */
+  function pastePair(raw) {
+    $('q').value = String(raw).trim();
+    renderSearch();
+    const i = qItems.findIndex((it) => it.src === '座標');
+    if (i >= 0) selectItem(i); else updatePreview();
+  }
+
+  function distLabel(it, from) {
+    if (!from) return '';
+    const d = Geo.inverse(from.lat, from.lon, it.lat, it.lon);
+    return `${(d.distance / 1000).toFixed(1)}km / ${fmtBrg(d.bearing)}`;
+  }
+
+  function renderSearch() {
+    const box = $('qResults');
+    const q = $('q').value.trim();
+    const from = searchFrom();
+    qItems = [];
+    if (!q) {
+      const n = ptsList().length;
+      box.innerHTML = `<div class="q-hint">${n ? `登録地点 ${n}件から検索できます（電波不要）。見つからない場合は「地理院で検索」を押してください。`
+        : '登録地点が未登録です（下の「登録地点」から一覧表を読み込めます）。「地理院で検索」は電波が必要です。'}</div>`;
+      return;
+    }
+    // 座標そのものが入力された場合
+    if ((q.match(/\d+(?:\.\d+)?/g) || []).length >= 2) {
+      try { const r = Geo.parsePair(q); qItems.push({ src: '座標', name: '', lat: r.lat, lon: r.lon, note: r.notes.join(' ') }); } catch (e) { /* 座標ではない */ }
+    }
+    Points.search(ptsList(), q, from, 30).forEach((h) => qItems.push(Object.assign({ src: '登録地点' }, h.p)));
+    const localCount = qItems.length;
+    if (gsi.q === q && gsi.state === 'done') gsi.list.forEach((g) => qItems.push(Object.assign({ src: '地理院' }, g)));
+
+    let html = '';
+    if (!localCount && !(gsi.q === q && gsi.state === 'done' && gsi.list.length)) {
+      html += `<div class="q-hint">登録地点に「${esc(q)}」は見つかりません。</div>`;
+    }
+    html += qItems.map((it, i) => {
+      const badge = it.src === '登録地点' ? '<span class="q-badge reg">★登録</span>' : it.src === '地理院' ? '<span class="q-badge gsi">地理院</span>' : '<span class="q-badge crd">座標</span>';
+      const title = it.name || `${Geo.formatDD(it.lat)}, ${Geo.formatDD(it.lon)}`;
+      const sub = [it.pref, it.type].filter(Boolean).join('・');
+      const isSel = S.sel && S.sel.lat === it.lat && S.sel.lon === it.lon && (S.sel.name || '') === (it.name || '');
+      return `<button type="button" class="q-item${isSel ? ' sel' : ''}" data-i="${i}">
+        <span class="q-top">${badge}<span class="q-name">${esc(title)}</span><span class="q-dist">${distLabel(it, from)}</span></span>
+        ${sub || it.note ? `<span class="q-sub">${esc(sub)}${sub && it.note ? '　' : ''}${it.note ? '備考：' + esc(it.note.length > 60 ? it.note.slice(0, 60) + '…' : it.note) : ''}</span>` : ''}
+      </button>`;
+    }).join('');
+    if (gsi.q === q && gsi.state === 'loading') html += '<div class="q-hint">地理院で検索中…</div>';
+    else if (gsi.q === q && gsi.state === 'error') html += '<div class="q-hint q-warn">地理院の検索に失敗しました（電波がないか、混雑しています）。登録地点の検索は使えます。</div>';
+    else if (gsi.q === q && gsi.state === 'done' && !gsi.list.length) html += '<div class="q-hint">地理院でも見つかりませんでした。名称を短くするか、市町村名を付けて試してください。</div>';
+    else if (gsi.q !== q) html += `<button type="button" class="btn q-more" id="qGsiBtn">🌐 地理院で「${esc(q)}」を検索（電波が必要）</button>`;
+    box.innerHTML = html;
+    const gb = $('qGsiBtn');
+    if (gb) gb.onclick = () => gsiSearch(q);
+  }
+
+  async function gsiSearch(q) {
+    q = String(q || '').trim();
+    if (!q) return;
+    const seq = ++gsiSeq;
+    gsi = { q, state: 'loading', list: [] };
+    renderSearch();
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = setTimeout(() => ctrl && ctrl.abort(), 10000);
+    try {
+      const res = await fetch(GSI_SEARCH(q), { signal: ctrl ? ctrl.signal : undefined });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const j = await res.json();
+      if (seq !== gsiSeq) return;
+      const from = searchFrom();
+      const terms = q.normalize('NFKC').split(/[\s　]+/).map(qnorm).filter(Boolean);
+      const seen = new Set();
+      const list = (Array.isArray(j) ? j : []).map((f) => ({
+        name: f && f.properties ? f.properties.title : '',
+        lon: f && f.geometry ? f.geometry.coordinates[0] : NaN,
+        lat: f && f.geometry ? f.geometry.coordinates[1] : NaN,
+      })).filter((g) => g.name && isFinite(g.lat) && isFinite(g.lon) && !seen.has(g.name + g.lat) && seen.add(g.name + g.lat))
+        .map((g) => {
+          const n = qnorm(g.name);
+          const score = terms.every((t) => n.includes(t)) ? 2 : terms.some((t) => t.length >= 2 && n.includes(t)) ? 1 : 0;
+          const d = from ? Geo.inverse(from.lat, from.lon, g.lat, g.lon).distance : 0;
+          return Object.assign(g, { score, d });
+        })
+        .filter((g) => g.score > 0)
+        .sort((a, b) => b.score - a.score || a.d - b.d)
+        .slice(0, 15);
+      gsi = { q, state: 'done', list };
+    } catch (e) {
+      if (seq !== gsiSeq) return;
+      gsi = { q, state: 'error', list: [] };
+    } finally { clearTimeout(timer); }
+    renderSearch();
+  }
+
+  function selectItem(i) {
+    const it = qItems[i];
+    if (!it) return;
+    clearDMS(); clearDD();
+    S.sel = { lat: it.lat, lon: it.lon, name: it.name || '', note: it.note || '', pref: it.pref || '', type: it.type || '', src: it.src };
+    document.querySelectorAll('.q-item').forEach((b) => b.classList.toggle('sel', +b.dataset.i === i));
+    $('q').blur();
+    updatePreview();
+    $('preview').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  /* =========================================================
+   * 登録地点（協議会一覧）の読み込み・元に戻す・書き出し
+   * ========================================================= */
+  function savePts() {
+    const ok1 = LS.trySet('pts', S.pts), ok2 = LS.trySet('ptsPrev', S.ptsPrev);
+    if (!ok1) infoModal('保存できませんでした', '端末の保存容量が不足しています。一覧の件数を減らすか、iPadの空き容量を確認してください。');
+    return ok1 && ok2;
+  }
+  function renderPts() {
+    const pts = ptsList();
+    const info = $('ptsInfo');
+    if (!pts.length) {
+      info.innerHTML = '<div class="empty small-empty">未登録です。一覧表（Excel / CSV）を読み込んでください。</div>';
+    } else {
+      const byPref = {};
+      pts.forEach((p) => { byPref[p.pref] = (byPref[p.pref] || 0) + 1; });
+      const d = new Date(S.pts.importedAt);
+      info.innerHTML = `
+        <div class="pts-total"><b>${pts.length}</b> 件</div>
+        <div class="small muted">${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${hm(S.pts.importedAt)} 読込　${esc(S.pts.fileName || '')}</div>
+        <div class="pts-prefs">${Object.keys(byPref).map((k) => `<span class="chip">${esc(k)} ${byPref[k]}</span>`).join('')}</div>`;
+    }
+    $('ptsUndoBtn').disabled = !(S.ptsPrev && S.ptsPrev.points && S.ptsPrev.points.length);
+    $('ptsExportBtn').disabled = !pts.length;
+    if (S.editing) renderSearch();
+  }
+
+  function issueList(title, list, cls) {
+    if (!list.length) return '';
+    const shown = list.slice(0, 60).map((e) =>
+      `<li><b>${esc(e.sheet)}</b> ${e.row}行目${e.name ? '「' + esc(e.name) + '」' : ''}：${esc(e.msg)}</li>`).join('');
+    return `<div class="${cls}"><div class="iss-title">${title}（${list.length}件）</div><ul class="iss">${shown}${list.length > 60 ? `<li>…ほか ${list.length - 60}件</li>` : ''}</ul></div>`;
+  }
+
+  async function importPts(file) {
+    if (!file) return;
+    let sheets;
+    try { sheets = await Points.readFile(file); } catch (e) {
+      infoModal('一覧表を読み込めません', esc(e.message || String(e)));
+      return;
+    }
+    const res = Points.extractPoints(sheets);
+    const sheetRows = res.sheets.map((sh) =>
+      `<tr><td>${esc(sh.name)}</td><td class="num">${sh.skipped ? '—' : sh.count + '件'}</td><td class="small muted">${esc(sh.skipped || '')}</td></tr>`).join('');
+    if (!res.points.length) {
+      infoModal('地点が見つかりませんでした', `<div class="small">「${esc(file.name)}」</div>
+        <table class="pts-table">${sheetRows}</table>
+        <div class="small" style="margin-top:8px">各シートの1行目付近に「名称」「緯度」「経度」の見出しが必要です。入力用テンプレートを参考にしてください。</div>
+        ${issueList('読み込めなかった行', res.errors, 'iss-err')}`);
+      return;
+    }
+    const df = Points.diff(ptsList(), res.points);
+    const ok = await confirmModal('登録地点をこの内容に入れ替えますか？', `
+      <div class="small">ファイル：${esc(file.name)}</div>
+      <table class="pts-table">${sheetRows}<tr class="tot"><td>合計</td><td class="num">${res.points.length}件</td><td></td></tr></table>
+      ${ptsList().length ? `<div class="pts-diff">前回との比較（目安）：追加 <b>${df.added}</b>／変更 <b>${df.changed}</b>／削除 <b>${df.removed}</b>／変更なし ${df.same}</div>` : ''}
+      ${issueList('⚠ 読み込めない行（この行は登録されません）', res.errors, 'iss-err')}
+      ${issueList('確認が必要な行（登録はされます）', res.warnings, 'iss-warn')}
+      <div class="small muted" style="margin-top:8px">入れ替え後も「前の一覧に戻す」で1回分だけ元に戻せます。</div>`, '入れ替える');
+    if (!ok) return;
+    S.ptsPrev = S.pts;
+    S.pts = { points: res.points, fileName: file.name, importedAt: Date.now() };
+    if (!savePts()) return;
+    renderPts();
+    toast(`登録地点を ${res.points.length}件 に更新しました`, 3000);
+  }
+
+  async function undoPts() {
+    if (!S.ptsPrev) return;
+    const d = new Date(S.ptsPrev.importedAt);
+    const ok = await confirmModal('前の一覧に戻しますか？', `
+      ${S.ptsPrev.points.length}件（${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} 読込　${esc(S.ptsPrev.fileName || '')}）に戻します。<br>
+      <span class="small muted">今の一覧（${ptsList().length}件）は「前の一覧」として残ります。</span>`, '戻す');
+    if (!ok) return;
+    const t = S.pts; S.pts = S.ptsPrev; S.ptsPrev = t;
+    if (!savePts()) return;
+    renderPts();
+    toast('前の一覧に戻しました');
+  }
+
+  /** ファイルを渡す（共有シート → 「"ファイル"に保存」／AirDrop） */
+  async function saveFile(blob, name) {
+    try {
+      const f = new File([blob], name, { type: blob.type });
+      if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f] }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 15000);
+  }
+  function exportPts() {
+    const pts = ptsList();
+    if (!pts.length) return;
+    const d = new Date();
+    saveFile(new Blob([Points.toCSV(pts)], { type: 'text/csv' }),
+      `登録地点_${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}.csv`);
+  }
+  async function downloadTemplate() {
+    try {
+      const r = await fetch(TEMPLATE_FILE);
+      if (!r.ok) throw new Error();
+      await saveFile(new Blob([await r.arrayBuffer()], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), '登録地点_入力用テンプレート.xlsx');
+    } catch (e) { toast('テンプレートを取得できませんでした（一度オンラインで開いてください）', 3500); }
+  }
+
   function openEdit() {
     S.editing = true;
     $('targetView').hidden = true;
     $('targetForm').hidden = false;
     $('cancelEditBtn').hidden = !S.target;
     $('formBtnRow').classList.toggle('two', !!S.target);
+    renderSearch();
     updatePreview();
     focusField('latD'); // タップ操作内で直接フォーカス（iPadでキーボードを開くため）
   }
@@ -302,8 +544,7 @@
     S.editing = false;
     $('targetForm').hidden = true;
     $('targetView').hidden = false;
-    $('inPair').value = '';
-    clearDMS(); clearDD();
+    clearDMS(); clearDD(); clearSearch();
     S.pending = null;
     document.activeElement && document.activeElement.blur && document.activeElement.blur();
   }
@@ -311,7 +552,7 @@
   /** 入力欄 → 変換プレビュー */
   function updatePreview() {
     const pv = $('preview');
-    const pair = $('inPair').value.trim();
+    const sel = (!dmsAnyFilled() && !ddAnyFilled()) ? S.sel : null;
     const useDD = !dmsAnyFilled() && ddAnyFilled();
     const dLat = useDD ? ddString('lat') : dmsString('lat');
     const dLon = useDD ? ddString('lon') : dmsString('lon');
@@ -322,8 +563,8 @@
     $('applyBtn').disabled = true;
     let r;
     try {
-      if (pair) {
-        r = Geo.parsePair(pair);
+      if (sel) {
+        r = Geo.validate(sel.lat, sel.lon, 'DD', []);
       } else if (la && lo) {
         const a = Geo.parseSingle(la, 'lat');
         const b = Geo.parseSingle(lo, 'lon');
@@ -333,7 +574,7 @@
         pv.innerHTML = `<div class="muted">${need}を入力してください</div>`;
         return;
       } else {
-        pv.innerHTML = '<div class="muted">変換結果がここに表示されます</div>';
+        pv.innerHTML = '<div class="muted">座標を入力するか、名称で検索して選んでください</div>';
         return;
       }
     } catch (e) {
@@ -342,7 +583,8 @@
       return;
     }
     S.pending = { lat: r.lat, lon: r.lon };
-    const fmtName = { DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '';
+    if (sel) Object.assign(S.pending, { name: sel.name || '', note: sel.note || '', pref: sel.pref || '', type: sel.type || '' });
+    const fmtName = sel ? `検索結果（${sel.src}）` : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
     let extra = '';
     if (S.target) {
       const d = Geo.inverse(S.target.lat, S.target.lon, r.lat, r.lon);
@@ -351,6 +593,9 @@
     pv.className = 'preview ok';
     pv.innerHTML = `
       <div class="small muted">認識形式: ${fmtName}</div>
+      ${sel && sel.name ? `<div class="pv-name">${esc(sel.name)}</div>` : ''}
+      ${sel && (sel.pref || sel.type) ? `<div class="small muted">${esc([sel.pref, sel.type].filter(Boolean).join('・'))}</div>` : ''}
+      ${sel && sel.note ? `<div class="pv-memo">${esc(sel.note)}</div>` : ''}
       <div class="pv-dd mono">${Geo.formatDD(r.lat)}, ${Geo.formatDD(r.lon)}</div>
       <div class="pv-dms mono">${Geo.formatDMS(r.lat, true)}　${Geo.formatDMS(r.lon, false)}</div>
       <div class="small">${Geo.formatDMSJa(r.lat, true)}　${Geo.formatDMSJa(r.lon, false)}</div>
@@ -363,17 +608,18 @@
     const p = S.pending;
     if (!p) return;
     const ok = await confirmModal(S.target ? '現場座標を変更しますか？' : '現場座標を確定しますか？', `
+      ${p.name ? `<div class="pv-name">${esc(p.name)}</div>` : ''}
       <div class="mono">${Geo.formatDD(p.lat)}, ${Geo.formatDD(p.lon)}</div>
       <div class="mono">${Geo.formatDMS(p.lat, true)} ${Geo.formatDMS(p.lon, false)}</div>
       ${S.target ? `<div class="small muted" style="margin-top:8px">変更前: ${esc(ddText(S.target))}</div>` : ''}`,
     '確定する');
     if (!ok) return;
-    setTarget(p.lat, p.lon, { pushCurrent: true });
+    setTarget(p.lat, p.lon, { pushCurrent: true, meta: p });
     toast(S.history.length ? '現場座標を更新しました' : '現場座標を設定しました');
   }
 
   function pushHistory(t) {
-    S.history = [{ lat: t.lat, lon: t.lon, setAt: t.setAt }]
+    S.history = [{ lat: t.lat, lon: t.lon, setAt: t.setAt, name: t.name || '', note: t.note || '', pref: t.pref || '', type: t.type || '' }]
       .concat(S.history.filter((h) => !(Math.abs(h.lat - t.lat) < 1e-9 && Math.abs(h.lon - t.lon) < 1e-9)))
       .slice(0, HIST_MAX);
   }
@@ -383,7 +629,9 @@
     const prev = S.target;
     if (prev && opts.pushCurrent) pushHistory(prev);
     if (prev) S.old = { lat: prev.lat, lon: prev.lon };
-    S.target = { lat, lon, setAt: opts.setAt || Date.now(), elev: { status: 'loading' } };
+    const m = opts.meta || {};
+    S.target = { lat, lon, setAt: opts.setAt || Date.now(), elev: { status: 'loading' },
+      name: m.name || '', note: m.note || '', pref: m.pref || '', type: m.type || '' };
     saveTarget();
     closeEdit();
     renderTarget();
@@ -397,12 +645,13 @@
     if (!S.history.length) return;
     const h = S.history[0];
     const ok = await confirmModal('1つ前の座標に戻しますか？', `
+      ${h.name ? `<div class="pv-name">${esc(h.name)}</div>` : ''}
       <div class="mono">${esc(ddText(h))}</div><div class="mono">${esc(dmsText(h))}</div>
       ${S.target ? `<div class="small muted" style="margin-top:8px">現在: ${esc(ddText(S.target))}（破棄されます）</div>` : ''}`,
     '戻す');
     if (!ok) return;
     S.history.shift();
-    setTarget(h.lat, h.lon, { pushCurrent: false, setAt: h.setAt });
+    setTarget(h.lat, h.lon, { pushCurrent: false, setAt: h.setAt, meta: h });
     toast('1つ前の現場座標に戻しました');
   }
 
@@ -410,11 +659,12 @@
     const h = S.history[idx];
     if (!h) return;
     const ok = await confirmModal('この座標を現場に設定しますか？', `
+      ${h.name ? `<div class="pv-name">${esc(h.name)}</div>` : ''}
       <div class="mono">${esc(ddText(h))}</div><div class="mono">${esc(dmsText(h))}</div>
       <div class="small muted" style="margin-top:8px">現在の現場は履歴に残ります</div>`, '設定する');
     if (!ok) return;
     S.history.splice(idx, 1);
-    setTarget(h.lat, h.lon, { pushCurrent: true, setAt: h.setAt });
+    setTarget(h.lat, h.lon, { pushCurrent: true, setAt: h.setAt, meta: h });
     $('histList').hidden = true;
     toast('履歴の座標を現場に設定しました');
   }
@@ -712,7 +962,7 @@
     // 現場マーカー
     if (t) {
       const ll = [t.lat, t.lon];
-      const label = '現場' + (t.elev && t.elev.status === 'ok' ? ` ${fmtInt(t.elev.value)}m` : '');
+      const label = (t.name || '現場') + (t.elev && t.elev.status === 'ok' ? ` ${fmtInt(t.elev.value)}m` : '');
       if (!tgMarker) {
         tgMarker = L.marker(ll, {
           icon: L.divIcon({ className: 'tg-icon', html: TG_SVG('#ff2a2a'), iconSize: [46, 46], iconAnchor: [23, 23] }),
@@ -1136,12 +1386,8 @@
   function bind() {
     $('editBtn').onclick = openEdit;
     $('cancelEditBtn').onclick = closeEdit;
-    $('clearInputBtn').onclick = () => { $('inPair').value = ''; clearDMS(); clearDD(); updatePreview(); focusField('latD'); };
+    $('clearInputBtn').onclick = () => { clearDMS(); clearDD(); clearSearch(); updatePreview(); focusField('latD'); };
     $('targetForm').addEventListener('submit', (e) => { e.preventDefault(); applyPending(); });
-    $('inPair').addEventListener('input', () => {
-      if ($('inPair').value.trim()) { if (dmsAnyFilled()) clearDMS(); if (ddAnyFilled()) clearDD(); }
-      updatePreview();
-    });
     DMS_ORDER.forEach((id) => {
       $(id).addEventListener('input', onDMSInput);
       $(id).addEventListener('keydown', onDMSKeydown);
@@ -1156,7 +1402,24 @@
     $('hemiLonDD').onclick = () => { setHemi('hemiLonDD', $('hemiLonDD').dataset.v === 'E' ? 'W' : 'E'); updatePreview(); };
     $('hemiLat').onclick = () => { setHemi('hemiLat', $('hemiLat').dataset.v === 'N' ? 'S' : 'N'); updatePreview(); };
     $('hemiLon').onclick = () => { setHemi('hemiLon', $('hemiLon').dataset.v === 'E' ? 'W' : 'E'); updatePreview(); };
-    $('inPair').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); applyPending(); } });
+
+    // 名称検索
+    $('q').addEventListener('input', () => {
+      clearSel(); updatePreview();
+      clearTimeout(qTimer); qTimer = setTimeout(renderSearch, 120);
+    });
+    $('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); gsiSearch($('q').value); } });
+    $('qBtn').onclick = () => gsiSearch($('q').value);
+    $('qResults').addEventListener('click', (e) => {
+      const b = e.target.closest('.q-item');
+      if (b) selectItem(parseInt(b.dataset.i, 10));
+    });
+    // 登録地点
+    $('ptsLoadBtn').onclick = () => $('ptsFile').click();
+    $('ptsFile').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; importPts(f); });
+    $('ptsUndoBtn').onclick = undoPts;
+    $('ptsExportBtn').onclick = exportPts;
+    $('ptsTplBtn').onclick = downloadTemplate;
 
     $('undoBtn').onclick = undoTarget;
     $('histBtn').onclick = () => { $('histList').hidden = !$('histList').hidden; };
@@ -1208,6 +1471,7 @@
     setShowOld(S.showOld);
     setLayer(S.layer);
     renderTarget();
+    renderPts();
     if (!S.target) openEdit();
     else if (!S.target.elev || S.target.elev.status !== 'ok') fetchElevation();
 

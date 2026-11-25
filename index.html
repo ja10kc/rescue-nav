@@ -52,6 +52,7 @@
         <div id="targetView">
           <div id="targetEmpty" class="empty">現場座標が未設定です</div>
           <div id="targetInfo" hidden>
+            <div id="tName" class="t-name" hidden></div>
             <div class="coord-big">
               <div><span class="lbl">緯度</span><span id="tLatDD" class="mono"></span></div>
               <div><span class="lbl">経度</span><span id="tLonDD" class="mono"></span></div>
@@ -59,6 +60,7 @@
             <div class="coord-dms mono">
               <span id="tLatDMS"></span>　<span id="tLonDMS"></span>
             </div>
+            <div id="tNote" class="t-note" hidden></div>
           </div>
           <div class="btn-row">
             <button id="editBtn" class="btn btn-warn btn-lg" type="button">✎ 現場座標を変更（再入力）</button>
@@ -123,11 +125,16 @@
               <span class="dms-u">°</span>
             </div>
           </div>
-          <div class="or">— または貼り付け（文字列のまま貼り付け可）—</div>
-          <label class="field">
-            <textarea id="inPair" rows="2" spellcheck="false" autocapitalize="off"
-              placeholder="例) 35.360556, 138.727778&#10;例) 35°21'38.45&quot;N 138°43'40.12&quot;E"></textarea>
-          </label>
+          <!-- 名称検索（登録地点：電波不要／地理院：電波が必要） -->
+          <div class="dms-block search-block">
+            <div class="dms-title">名称で検索 <span class="muted small">（病院・公園・地名。座標の貼り付けも可）</span></div>
+            <div class="search-row">
+              <input id="q" type="search" enterkeyhint="search" spellcheck="false" autocapitalize="off" autocomplete="off"
+                placeholder="例）赤十字　熊本 公園　○○病院">
+              <button id="qBtn" class="btn" type="button">🌐 地理院</button>
+            </div>
+            <div id="qResults" class="q-results"></div>
+          </div>
           <div id="preview" class="preview">
             <div class="muted">変換結果がここに表示されます</div>
           </div>
@@ -228,6 +235,24 @@
         </div>
       </div>
 
+      <!-- 登録地点（協議会一覧）の管理 -->
+      <div class="card pts-card">
+        <div class="card-head"><h2>登録地点（協議会一覧）</h2></div>
+        <div id="ptsInfo"></div>
+        <div class="btn-row">
+          <button id="ptsLoadBtn" class="btn btn-lg" type="button">📥 一覧表を読み込む（Excel / CSV）</button>
+        </div>
+        <div class="btn-row two">
+          <button id="ptsUndoBtn" class="btn" type="button" disabled>↶ 前の一覧に戻す</button>
+          <button id="ptsExportBtn" class="btn" type="button" disabled>📤 一覧をCSVで書き出す</button>
+        </div>
+        <div class="btn-row">
+          <button id="ptsTplBtn" class="btn" type="button">📄 入力用テンプレートを保存</button>
+        </div>
+        <div class="small muted pts-note">一覧はこのiPadの中だけに保存され、外部には送信されません。</div>
+        <input id="ptsFile" type="file" accept=".xlsx,.csv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden>
+      </div>
+
       <div class="card small muted about">
         距離・方位は端末内で計算（WGS84楕円体／Vincenty法）。地図・標高のみ通信を使用します。<br>
         地図: 国土地理院 / © OpenStreetMap contributors　標高: 国土地理院 標高API
@@ -275,6 +300,7 @@
     style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-10px;top:-10px"></video>
 
   <script src="geo.js"></script>
+  <script src="points.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

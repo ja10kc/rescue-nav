@@ -4,7 +4,7 @@
  *   地図タイル : キャッシュ優先（一度表示/保存した範囲はオフラインでも表示）
  *   標高API    : ネットワーク優先 → 失敗時キャッシュ
  * ========================================================= */
-const CACHE_VERSION = 'v1.3.0';
+const CACHE_VERSION = 'v1.4.0';
 const APP_CACHE = `rescue-nav-app-${CACHE_VERSION}`;
 const TILE_CACHE = 'rescue-nav-tiles';
 const DATA_CACHE = 'rescue-nav-data';
@@ -15,6 +15,8 @@ const APP_FILES = [
   './index.html',
   './style.css',
   './geo.js',
+  './points.js',
+  './touroku-template.xlsx',
   './app.js',
   './manifest.json',
   './nosleep.mp4',
