@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ja" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>山岳救助ナビ</title>
+  <meta name="description" content="消防航空隊 ヘリコプター山岳救助向け 現場誘導アプリ">
+  <meta name="theme-color" content="#0b0f14">
+  <!-- iPad「ホーム画面に追加」用 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="救助ナビ">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- ===== 上部ステータスバー ===== -->
+  <header class="topbar">
+    <div class="brand">⛑ 山岳救助ナビ</div>
+    <div class="status-group">
+      <div id="gpsPill" class="pill pill-gray" role="status" aria-live="polite">
+        <span class="dot"></span>
+        <span class="pill-main" id="gpsText">GPS 未取得</span>
+        <span class="pill-sub" id="gpsTime">--:--:--</span>
+      </div>
+      <button id="wakeBtn" class="pill pill-gray" type="button">
+        <span class="dot"></span><span id="wakeText">画面ON維持</span>
+      </button>
+      <button id="testBtn" class="pill pill-gray" type="button">テストモード</button>
+      <button id="themeBtn" class="pill pill-gray" type="button" aria-label="昼夜切替">☀ 昼表示</button>
+    </div>
+  </header>
+
+  <div id="testBanner" class="test-banner" hidden>⚠ テストモード中 — 表示中の自機位置は模擬データです（実GPSではありません）</div>
+
+  <main class="layout">
+    <!-- ===== 左（縦画面では上）: 現場・ダッシュボード ===== -->
+    <section class="side" id="side">
+
+      <!-- 現場座標カード -->
+      <div class="card target-card">
+        <div class="card-head">
+          <h2>救助現場</h2>
+          <span id="targetSetAt" class="muted small"></span>
+        </div>
+
+        <!-- 確定済み表示（折りたたみ状態） -->
+        <div id="targetView">
+          <div id="targetEmpty" class="empty">現場座標が未設定です</div>
+          <div id="targetInfo" hidden>
+            <div class="coord-big">
+              <div><span class="lbl">緯度</span><span id="tLatDD" class="mono"></span></div>
+              <div><span class="lbl">経度</span><span id="tLonDD" class="mono"></span></div>
+            </div>
+            <div class="coord-dms mono">
+              <span id="tLatDMS"></span>　<span id="tLonDMS"></span>
+            </div>
+          </div>
+          <div class="btn-row">
+            <button id="editBtn" class="btn btn-warn btn-lg" type="button">✎ 現場座標を変更（再入力）</button>
+          </div>
+          <div class="btn-row">
+            <button id="gmapBtn" class="btn btn-lg" type="button" disabled>Googleマップで現場を開く</button>
+          </div>
+          <div class="btn-row two">
+            <button id="copyDDBtn" class="btn" type="button" disabled>⧉ 10進数をコピー</button>
+            <button id="copyDMSBtn" class="btn" type="button" disabled>⧉ 度分秒をコピー</button>
+          </div>
+          <div class="btn-row two">
+            <button id="undoBtn" class="btn" type="button" disabled>↶ 1つ前の座標に戻す</button>
+            <button id="histBtn" class="btn" type="button" disabled>履歴 (<span id="histCount">0</span>)</button>
+          </div>
+          <ul id="histList" class="hist-list" hidden></ul>
+        </div>
+
+        <!-- 入力フォーム（展開状態） -->
+        <form id="targetForm" class="target-form" hidden autocomplete="off">
+          <label class="field">
+            <span>一括入力・貼り付け（10進数 / 度分秒どちらでも可）</span>
+            <textarea id="inPair" rows="2" spellcheck="false" autocapitalize="off"
+              placeholder="例) 35.360556, 138.727778&#10;例) 35°21'38.45&quot;N 138°43'40.12&quot;E"></textarea>
+          </label>
+          <div class="or">— または個別入力 —</div>
+          <div class="grid2">
+            <label class="field">
+              <span>緯度</span>
+              <input id="inLat" type="text" inputmode="text" spellcheck="false" autocapitalize="off"
+                placeholder="35.360556 / 35 21 38.45">
+            </label>
+            <label class="field">
+              <span>経度</span>
+              <input id="inLon" type="text" inputmode="text" spellcheck="false" autocapitalize="off"
+                placeholder="138.727778 / 138 43 40.12">
+            </label>
+          </div>
+          <div id="preview" class="preview">
+            <div class="muted">変換結果がここに表示されます</div>
+          </div>
+          <div id="formBtnRow" class="btn-row two">
+            <button id="cancelEditBtn" class="btn btn-lg" type="button">キャンセル</button>
+            <button id="applyBtn" class="btn btn-go btn-lg" type="submit" disabled>✔ この座標で確定</button>
+          </div>
+          <div class="btn-row">
+            <button id="clearInputBtn" class="btn" type="button">入力をクリア</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- ダッシュボード -->
+      <div class="dash">
+        <div class="tile tile-wide tile-dist">
+          <div class="tile-lbl">現場までの残り直線距離</div>
+          <div class="tile-row">
+            <div class="big"><span id="dKm">--.--</span><small>km</small></div>
+            <div class="big sub"><span id="dNm">--.--</span><small>NM</small></div>
+          </div>
+        </div>
+        <div class="tile">
+          <div class="tile-lbl">現場への指示方位（真方位・北=360）</div>
+          <div class="big"><span id="dBrg">---</span><small>°</small></div>
+          <div class="tile-sub"><span id="dCard">--</span>　<span id="dRel"></span></div>
+        </div>
+        <div class="tile">
+          <div class="tile-lbl">対地速度</div>
+          <div class="big"><span id="dKt">---</span><small>kt</small></div>
+          <div class="tile-sub"><span id="dKmh">---</span> km/h　進行方位 <span id="dHdg">---</span>°</div>
+        </div>
+        <div class="tile">
+          <div class="tile-lbl">到着予想（ETE）</div>
+          <div class="big"><span id="dEte">--:--</span></div>
+          <div class="tile-sub">ETA <span id="dEta">--:--</span></div>
+        </div>
+        <div class="tile">
+          <div class="tile-lbl">救助現場の標高</div>
+          <div class="big"><span id="dElev">----</span><small>m</small></div>
+          <div class="tile-sub"><span id="dElevFt">----</span> ft　<span id="dElevSrc" class="muted"></span>
+            <button id="elevRetryBtn" class="btn-mini" type="button" hidden>再取得</button></div>
+        </div>
+        <div class="tile tile-wide">
+          <div class="tile-lbl">高度差の目安（GPS高度 − 現場標高）</div>
+          <div class="tile-row">
+            <div class="big"><span id="dDiff">----</span><small>m</small></div>
+            <div class="big sub"><span id="dDiffFt">----</span><small>ft</small></div>
+          </div>
+          <div class="tile-sub">自機GPS高度 <span id="dAlt">----</span> m（<span id="dAltFt">----</span> ft）±<span id="dAltAcc">--</span>m　※GPS高度は誤差を含む目安</div>
+        </div>
+        <div class="tile tile-wide">
+          <div class="tile-lbl">自機位置</div>
+          <div class="tile-sub mono big-mono"><span id="pLat">--</span>, <span id="pLon">--</span></div>
+          <div class="tile-sub mono"><span id="pDMS">--</span></div>
+        </div>
+      </div>
+
+      <!-- テストモード操作パネル -->
+      <div id="testPanel" class="card test-panel" hidden>
+        <div class="card-head"><h2>テストモード（模擬移動）</h2></div>
+        <label class="field">
+          <span>自機の開始位置（座標を入力 または 下のボタン後に地図をタップ）</span>
+          <input id="simStart" type="text" spellcheck="false" autocapitalize="off" placeholder="35.50, 138.50">
+        </label>
+        <div class="btn-row two">
+          <button id="simSetStartBtn" class="btn" type="button">この座標に配置</button>
+          <button id="simTapBtn" class="btn" type="button">地図タップで配置</button>
+        </div>
+        <div class="btn-row">
+          <button id="simAutoStartBtn" class="btn" type="button">現場から20km南西に配置</button>
+        </div>
+        <div class="grid2">
+          <label class="field">
+            <span>速度 [kt]</span>
+            <select id="simSpeed">
+              <option value="0">0（ホバリング）</option>
+              <option value="60">60</option>
+              <option value="90">90</option>
+              <option value="120" selected>120</option>
+              <option value="140">140</option>
+              <option value="600">600（早送り）</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>GPS高度 [m]</span>
+            <input id="simAlt" type="number" inputmode="numeric" value="1500">
+          </label>
+        </div>
+        <label class="check"><input id="simAuto" type="checkbox" checked> 現場へ向かって自動飛行</label>
+        <label class="field">
+          <span>手動進行方位 [°]（自動飛行OFF時）</span>
+          <input id="simHdg" type="number" inputmode="numeric" value="45" min="0" max="359">
+        </label>
+        <div class="btn-row two">
+          <button id="simRunBtn" class="btn btn-go btn-lg" type="button">▶ 模擬移動 開始</button>
+          <button id="simStopBtn" class="btn btn-lg" type="button">■ 停止</button>
+        </div>
+      </div>
+
+      <div class="card small muted about">
+        距離・方位は端末内で計算（WGS84楕円体／Vincenty法）。地図・標高のみ通信を使用します。<br>
+        地図: 国土地理院 / © OpenStreetMap contributors　標高: 国土地理院 標高API
+      </div>
+    </section>
+
+    <!-- ===== 右（縦画面では下）: 地図 ===== -->
+    <section class="mapwrap">
+      <div id="map"><div id="mapFallback" class="map-fallback" hidden>
+        地図ライブラリを読み込めませんでした（オフライン）。<br>距離・方位・ETEの計算は引き続き動作します。
+      </div></div>
+      <!-- 自機中心の方位リング（北=360、10°ごとに数字） -->
+      <svg id="navRing" class="nav-ring" aria-hidden="true"></svg>
+      <button id="recenterBtn" class="btn btn-lg recenter" type="button" hidden>◎ 現在位置に戻る</button>
+      <div class="map-layers" role="group" aria-label="地図切替">
+        <button class="seg" data-layer="std" type="button">地理院 標準</button>
+        <button class="seg" data-layer="photo" type="button">航空写真</button>
+        <button class="seg" data-layer="osm" type="button">OSM</button>
+      </div>
+      <div class="map-ctrls">
+        <button id="headBtn" class="btn map-btn" type="button">機首方向が上</button>
+        <button id="fitBtn" class="btn map-btn" type="button">全体表示</button>
+        <button id="oldBtn" class="btn map-btn" type="button">旧現場 表示</button>
+        <button id="cacheBtn" class="btn map-btn" type="button">現場周辺の地図を保存</button>
+      </div>
+      <div id="mapTapHint" class="map-hint" hidden>地図をタップして自機の位置を指定</div>
+    </section>
+  </main>
+
+  <!-- 確認ダイアログ -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div id="modalTitle" class="modal-title"></div>
+      <div id="modalBody" class="modal-body"></div>
+      <div class="btn-row two">
+        <button id="modalNo" class="btn btn-lg" type="button">キャンセル</button>
+        <button id="modalYes" class="btn btn-go btn-lg" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Wake Lock 非対応端末用のフォールバック（無音ループ動画） -->
+  <video id="noSleepVideo" src="nosleep.mp4" playsinline muted loop
+    style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-10px;top:-10px"></video>
+
+  <script src="geo.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
