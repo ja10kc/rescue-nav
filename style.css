@@ -272,3 +272,30 @@ body {
   z-index: 600; background: var(--warn); color: var(--warn-text); border-color: var(--warn);
   box-shadow: var(--shadow); min-width: 240px; font-size: 21px;
 }
+
+/* ---------- 度分秒 個別入力 ---------- */
+.dms-block { display: grid; gap: 10px; }
+.dms-title { font-size: 14px; color: var(--muted); font-weight: 700; }
+.dms-row {
+  display: grid; align-items: center; gap: 5px;
+  grid-template-columns: auto auto minmax(0, 1.25fr) auto minmax(0, 1fr) auto minmax(0, 1.7fr) auto;
+}
+.dms-lbl { font-weight: 800; font-size: 15px; }
+.hemi {
+  min-width: 54px; min-height: 52px; padding: 0 6px; border-radius: 10px; border: 2px solid var(--line);
+  background: var(--btn); color: var(--btn-text); font: inherit; font-weight: 800; font-size: 16px;
+}
+.hemi.alt { background: var(--warn); color: var(--warn-text); border-color: var(--warn); }
+.dms-in {
+  width: 100%; min-width: 0; height: 56px; padding: 4px 4px; text-align: center; border-radius: 10px;
+  border: 2px solid var(--line); background: var(--panel2); color: var(--text);
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 26px; font-weight: 800;
+}
+.dms-in:focus { outline: 3px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+.dms-in.bad { border-color: var(--bad); }
+.dms-u { font-weight: 800; font-size: 15px; color: var(--muted); }
+.dd-row {
+  display: grid; align-items: center; gap: 5px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto minmax(0, 2.4fr) auto;
+}
+.dd-dot { font-size: 34px; font-weight: 900; line-height: 1; color: var(--accent); }

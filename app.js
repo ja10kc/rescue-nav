@@ -150,6 +150,145 @@
       </button></li>`).join('');
   }
 
+  /* =========================================================
+   * 度分秒 個別入力（自動で次のボックスへ移動）
+   * ========================================================= */
+  const DMS_ORDER = ['latD', 'latM', 'latS', 'lonD', 'lonM', 'lonS'];
+  const dmsEls = () => DMS_ORDER.map($);
+  const dmsAnyFilled = () => dmsEls().some((e) => e.value.trim() !== '');
+  const DD_ORDER = ['ddLatI', 'ddLatF', 'ddLonI', 'ddLonF'];
+  const ddAnyFilled = () => DD_ORDER.some((id) => $(id).value.trim() !== '');
+  function clearDMS() {
+    dmsEls().forEach((e) => { e.value = ''; e.classList.remove('bad'); });
+    setHemi('hemiLat', 'N'); setHemi('hemiLon', 'E');
+  }
+  function clearDD() {
+    DD_ORDER.forEach((id) => { $(id).value = ''; });
+    setHemi('hemiLatDD', 'N'); setHemi('hemiLonDD', 'E');
+  }
+  function setHemi(id, v) {
+    const b = $(id);
+    b.dataset.v = v;
+    b.textContent = { N: '北緯', S: '南緯', E: '東経', W: '西経' }[v];
+    b.classList.toggle('alt', v === 'S' || v === 'W');
+  }
+  function focusField(id) {
+    $(id).focus(); // フォーカス時に中身を全選択 → そのまま打ち直せる
+  }
+  /** 1座標分（緯度 or 経度）のボックス → 文字列 */
+  function dmsString(kind) {
+    const d = $(kind + 'D').value.trim(), m = $(kind + 'M').value.trim(), sec = $(kind + 'S').value.trim().replace(/\.$/, '');
+    if (!d && !m && !sec) return { empty: true };
+    if (!d || !m || !sec) return { partial: true };
+    const hemi = $(kind === 'lat' ? 'hemiLat' : 'hemiLon').dataset.v;
+    return { str: `${d} ${m} ${sec} ${hemi}` };
+  }
+  /** 10進数ボックス（整数部・小数部）→ 文字列 */
+  function ddString(kind) {
+    const k = kind === 'lat' ? 'Lat' : 'Lon';
+    const i = $('dd' + k + 'I').value.trim(), f = $('dd' + k + 'F').value.trim();
+    if (!i && !f) return { empty: true };
+    if (!i || !f) return { partial: true };
+    return { str: `${i}.${f} ${$('hemi' + k + 'DD').dataset.v}` };
+  }
+
+  /** 10進数ボックスの入力：整数部は桁数で、小数部は6桁で次へ */
+  function onDDInput(e) {
+    const el = e.target, id = el.id, raw = el.value;
+    if (/[^\d.]/.test(raw) && raw.trim().length > 4 && Geo.looksLikePair(raw)) {
+      el.value = ''; clearDD(); $('inPair').value = raw; updatePreview(); return;
+    }
+    if (dmsAnyFilled()) clearDMS();
+    if ($('inPair').value) $('inPair').value = '';
+    const isInt = /I$/.test(id);
+    if (isInt && raw.includes('.')) {
+      // 「35.360556」をまとめて打った／貼り付けた → 整数部と小数部に振り分け
+      const [a, b] = raw.split('.');
+      el.value = a.replace(/\D/g, '');
+      const fId = id.replace(/I$/, 'F');
+      $(fId).value = (b || '').replace(/\D/g, '').slice(0, 8);
+      updatePreview();
+      focusField(fId);
+      return;
+    }
+    const v = raw.replace(/\D/g, '').slice(0, isInt ? 3 : 8);
+    if (v !== raw) el.value = v;
+    let done = false;
+    if (id === 'ddLatI') done = v.length >= 2;
+    else if (id === 'ddLonI') done = v.length >= 3 || (v.length === 2 && v[0] !== '1');
+    else done = v.length >= 6;
+    updatePreview();
+    if (done && e.inputType !== 'deleteContentBackward') {
+      const i = DD_ORDER.indexOf(id);
+      if (i < DD_ORDER.length - 1) focusField(DD_ORDER[i + 1]);
+      else { el.blur(); $('applyBtn').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+    }
+  }
+
+  /** 入力のたびに：数字以外を除去 → 桁がそろえば次のボックスへ */
+  function onDMSInput(e) {
+    const el = e.target, id = el.id;
+    const raw = el.value;
+    // 座標をまるごと貼り付けた場合は一括欄へ
+    if (/[^\d.]/.test(raw) && raw.trim().length > 4) {
+      if (Geo.looksLikePair(raw)) {
+        el.value = ''; clearDMS();
+        $('inPair').value = raw; updatePreview(); return;
+      }
+      const nums = raw.match(/\d+(?:\.\d+)?/g) || [];
+      if (nums.length === 3 && /D$/.test(id)) {
+        const k = id.slice(0, 3);
+        $(k + 'D').value = nums[0]; $(k + 'M').value = nums[1]; $(k + 'S').value = nums[2];
+        $('inPair').value = '';
+        updatePreview(); return;
+      }
+    }
+    const isSec = /S$/.test(id);
+    let v;
+    if (isSec) {
+      v = raw.replace(/[^\d.]/g, '');
+      const dot = v.indexOf('.');
+      if (dot >= 0) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, '');
+      if (dot < 0 && v.length > 2) v = v.slice(0, 2) + '.' + v.slice(2); // 「3845」→「38.45」
+      if (/^[6-9]/.test(v)) v = '0' + v;                                   // 「7」→「07」
+      const p = v.indexOf('.');
+      if (p >= 0) v = v.slice(0, p + 3);                                   // 小数点以下2桁まで
+    } else {
+      v = raw.replace(/\D/g, '');
+      if (/M$/.test(id) && /^[6-9]/.test(v)) v = '0' + v;                  // 分「7」→「07」
+    }
+    if (v !== raw) el.value = v;
+    if ($('inPair').value) $('inPair').value = '';
+    if (ddAnyFilled()) clearDD();
+    el.classList.remove('bad');
+
+    // 自動移動の判定
+    let done = false;
+    if (id === 'latD') done = v.length >= 2;
+    else if (id === 'lonD') done = v.length >= 3 || (v.length === 2 && v[0] !== '1');
+    else if (/M$/.test(id)) done = v.length >= 2;
+    else if (isSec) done = /^\d{2}\.\d{2}$/.test(v);
+    updatePreview();
+    if (done && e.inputType !== 'deleteContentBackward') {
+      if (/M$/.test(id) && parseInt(v, 10) >= 60) { el.classList.add('bad'); return; }
+      const i = DMS_ORDER.indexOf(id);
+      if (i < DMS_ORDER.length - 1) focusField(DMS_ORDER[i + 1]);
+      else { el.blur(); $('applyBtn').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+    }
+  }
+  /** 空のボックスで削除キー → 前のボックスへ戻る */
+  function onDMSKeydown(e) {
+    const el = e.target;
+    if (e.key === 'Backspace' && el.value === '') {
+      const chain = DMS_ORDER.includes(el.id) ? DMS_ORDER : DD_ORDER;
+      const i = chain.indexOf(el.id);
+      if (i > 0) { e.preventDefault(); focusField(chain[i - 1]); }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (S.pending) applyPending();
+    }
+  }
+
   function openEdit() {
     S.editing = true;
     $('targetView').hidden = true;
@@ -157,13 +296,14 @@
     $('cancelEditBtn').hidden = !S.target;
     $('formBtnRow').classList.toggle('two', !!S.target);
     updatePreview();
-    setTimeout(() => $('inPair').focus(), 50);
+    focusField('latD'); // タップ操作内で直接フォーカス（iPadでキーボードを開くため）
   }
   function closeEdit() {
     S.editing = false;
     $('targetForm').hidden = true;
     $('targetView').hidden = false;
-    $('inPair').value = $('inLat').value = $('inLon').value = '';
+    $('inPair').value = '';
+    clearDMS(); clearDD();
     S.pending = null;
     document.activeElement && document.activeElement.blur && document.activeElement.blur();
   }
@@ -172,8 +312,11 @@
   function updatePreview() {
     const pv = $('preview');
     const pair = $('inPair').value.trim();
-    const la = $('inLat').value.trim();
-    const lo = $('inLon').value.trim();
+    const useDD = !dmsAnyFilled() && ddAnyFilled();
+    const dLat = useDD ? ddString('lat') : dmsString('lat');
+    const dLon = useDD ? ddString('lon') : dmsString('lon');
+    const la = dLat.str || '', lo = dLon.str || '';
+    const parts = useDD ? '整数部・小数部' : '度・分・秒';
     S.pending = null;
     pv.className = 'preview';
     $('applyBtn').disabled = true;
@@ -185,8 +328,9 @@
         const a = Geo.parseSingle(la, 'lat');
         const b = Geo.parseSingle(lo, 'lon');
         r = Geo.validate(a.value, b.value, a.fmt, []);
-      } else if (la || lo) {
-        pv.innerHTML = `<div class="muted">${la ? '経度' : '緯度'}も入力してください</div>`;
+      } else if (dLat.partial || dLon.partial || la || lo) {
+        const need = dLat.partial ? `緯度の${parts}` : dLon.partial ? `経度の${parts}` : (la ? '経度' : '緯度');
+        pv.innerHTML = `<div class="muted">${need}を入力してください</div>`;
         return;
       } else {
         pv.innerHTML = '<div class="muted">変換結果がここに表示されます</div>';
@@ -708,7 +852,7 @@
     svg.innerHTML = '';
     ring.circle = svgEl('circle', { class: 'rg-circle' }, svg);
     for (let b = 0; b < 360; b += 5) ring.ticks.push({ b, el: svgEl('line', { class: b % 10 === 0 ? 'rg-tick rg-tick10' : 'rg-tick' }, svg) });
-    for (let b = 10; b <= 360; b += 10) {
+    for (let b = 30; b <= 360; b += 30) { // 数字は30°ごと（目盛りは5°/10°ごと）
       const major = b % 90 === 0;
       const el = svgEl('text', { class: major ? 'rg-lbl rg-major' : 'rg-lbl', 'text-anchor': 'middle', 'dominant-baseline': 'central' }, svg);
       el.textContent = String(b);
@@ -742,10 +886,10 @@
       const [x1, y1] = pt(b, R), [x2, y2] = pt(b, R - (b % 10 === 0 ? 14 : 8));
       set(el, { x1, y1, x2, y2 });
     });
-    const fs = R < 150 ? 12 : R < 190 ? 14 : 16;
+    const fs = R < 150 ? 16 : R < 190 ? 18 : 20;
     ring.labels.forEach(({ b, el }) => {
       const [x, y] = pt(b, R - 14 - fs);
-      set(el, { x, y, 'font-size': b % 90 === 0 ? fs + 3 : fs });
+      set(el, { x, y, 'font-size': b % 90 === 0 ? fs + 4 : fs });
     });
 
     // 自機（進行方位の矢印）と進行方位線
@@ -992,20 +1136,26 @@
   function bind() {
     $('editBtn').onclick = openEdit;
     $('cancelEditBtn').onclick = closeEdit;
-    $('clearInputBtn').onclick = () => { $('inPair').value = $('inLat').value = $('inLon').value = ''; updatePreview(); $('inPair').focus(); };
+    $('clearInputBtn').onclick = () => { $('inPair').value = ''; clearDMS(); clearDD(); updatePreview(); focusField('latD'); };
     $('targetForm').addEventListener('submit', (e) => { e.preventDefault(); applyPending(); });
     $('inPair').addEventListener('input', () => {
-      if ($('inPair').value.trim()) { $('inLat').value = ''; $('inLon').value = ''; }
+      if ($('inPair').value.trim()) { if (dmsAnyFilled()) clearDMS(); if (ddAnyFilled()) clearDD(); }
       updatePreview();
     });
-    ['inLat', 'inLon'].forEach((id) => $(id).addEventListener('input', () => {
-      const v = $(id).value;
-      // 個別欄に緯度経度ペアが貼り付けられた場合は一括欄へ移す
-      if (Geo.looksLikePair(v) && !(id === 'inLat' ? $('inLon').value : $('inLat').value).trim()) {
-        $('inPair').value = v; $(id).value = '';
-      } else if ($('inPair').value) $('inPair').value = '';
-      updatePreview();
-    }));
+    DMS_ORDER.forEach((id) => {
+      $(id).addEventListener('input', onDMSInput);
+      $(id).addEventListener('keydown', onDMSKeydown);
+      $(id).addEventListener('focus', (e) => { try { e.target.select(); } catch (x) { /* 無視 */ } });
+    });
+    DD_ORDER.forEach((id) => {
+      $(id).addEventListener('input', onDDInput);
+      $(id).addEventListener('keydown', onDMSKeydown);
+      $(id).addEventListener('focus', (e) => { try { e.target.select(); } catch (x) { /* 無視 */ } });
+    });
+    $('hemiLatDD').onclick = () => { setHemi('hemiLatDD', $('hemiLatDD').dataset.v === 'N' ? 'S' : 'N'); updatePreview(); };
+    $('hemiLonDD').onclick = () => { setHemi('hemiLonDD', $('hemiLonDD').dataset.v === 'E' ? 'W' : 'E'); updatePreview(); };
+    $('hemiLat').onclick = () => { setHemi('hemiLat', $('hemiLat').dataset.v === 'N' ? 'S' : 'N'); updatePreview(); };
+    $('hemiLon').onclick = () => { setHemi('hemiLon', $('hemiLon').dataset.v === 'E' ? 'W' : 'E'); updatePreview(); };
     $('inPair').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); applyPending(); } });
 
     $('undoBtn').onclick = undoTarget;

@@ -79,24 +79,55 @@
 
         <!-- 入力フォーム（展開状態） -->
         <form id="targetForm" class="target-form" hidden autocomplete="off">
+          <!-- 度分秒の個別入力（桁がそろうと自動で次のボックスへ） -->
+          <div class="dms-block">
+            <div class="dms-title">度分秒で入力 <span class="muted small">（桁がそろうと自動で次へ進みます）</span></div>
+            <div class="dms-row">
+              <span class="dms-lbl">緯度</span>
+              <button id="hemiLat" class="hemi" type="button" data-v="N" aria-label="北緯／南緯の切替">北緯</button>
+              <input id="latD" class="dms-in dms-d2" type="text" inputmode="decimal" maxlength="2" placeholder="35" aria-label="緯度 度">
+              <span class="dms-u">度</span>
+              <input id="latM" class="dms-in dms-m" type="text" inputmode="decimal" maxlength="2" placeholder="21" aria-label="緯度 分">
+              <span class="dms-u">分</span>
+              <input id="latS" class="dms-in dms-s" type="text" inputmode="decimal" maxlength="5" placeholder="38.45" aria-label="緯度 秒">
+              <span class="dms-u">秒</span>
+            </div>
+            <div class="dms-row">
+              <span class="dms-lbl">経度</span>
+              <button id="hemiLon" class="hemi" type="button" data-v="E" aria-label="東経／西経の切替">東経</button>
+              <input id="lonD" class="dms-in dms-d3" type="text" inputmode="decimal" maxlength="3" placeholder="138" aria-label="経度 度">
+              <span class="dms-u">度</span>
+              <input id="lonM" class="dms-in dms-m" type="text" inputmode="decimal" maxlength="2" placeholder="43" aria-label="経度 分">
+              <span class="dms-u">分</span>
+              <input id="lonS" class="dms-in dms-s" type="text" inputmode="decimal" maxlength="5" placeholder="40.12" aria-label="経度 秒">
+              <span class="dms-u">秒</span>
+            </div>
+          </div>
+          <!-- 10進数の個別入力（整数部・小数部を分けて入力） -->
+          <div class="dms-block">
+            <div class="dms-title">10進数で入力 <span class="muted small">（整数部 → 小数部。桁がそろうと自動で次へ）</span></div>
+            <div class="dd-row">
+              <span class="dms-lbl">緯度</span>
+              <button id="hemiLatDD" class="hemi" type="button" data-v="N" aria-label="北緯／南緯の切替">北緯</button>
+              <input id="ddLatI" class="dms-in" type="text" inputmode="decimal" maxlength="2" placeholder="35" aria-label="緯度 整数部">
+              <span class="dd-dot">.</span>
+              <input id="ddLatF" class="dms-in" type="text" inputmode="decimal" maxlength="8" placeholder="360556" aria-label="緯度 小数部">
+              <span class="dms-u">°</span>
+            </div>
+            <div class="dd-row">
+              <span class="dms-lbl">経度</span>
+              <button id="hemiLonDD" class="hemi" type="button" data-v="E" aria-label="東経／西経の切替">東経</button>
+              <input id="ddLonI" class="dms-in" type="text" inputmode="decimal" maxlength="3" placeholder="138" aria-label="経度 整数部">
+              <span class="dd-dot">.</span>
+              <input id="ddLonF" class="dms-in" type="text" inputmode="decimal" maxlength="8" placeholder="727778" aria-label="経度 小数部">
+              <span class="dms-u">°</span>
+            </div>
+          </div>
+          <div class="or">— または貼り付け（文字列のまま貼り付け可）—</div>
           <label class="field">
-            <span>一括入力・貼り付け（10進数 / 度分秒どちらでも可）</span>
             <textarea id="inPair" rows="2" spellcheck="false" autocapitalize="off"
               placeholder="例) 35.360556, 138.727778&#10;例) 35°21'38.45&quot;N 138°43'40.12&quot;E"></textarea>
           </label>
-          <div class="or">— または個別入力 —</div>
-          <div class="grid2">
-            <label class="field">
-              <span>緯度</span>
-              <input id="inLat" type="text" inputmode="text" spellcheck="false" autocapitalize="off"
-                placeholder="35.360556 / 35 21 38.45">
-            </label>
-            <label class="field">
-              <span>経度</span>
-              <input id="inLon" type="text" inputmode="text" spellcheck="false" autocapitalize="off"
-                placeholder="138.727778 / 138 43 40.12">
-            </label>
-          </div>
           <div id="preview" class="preview">
             <div class="muted">変換結果がここに表示されます</div>
           </div>
