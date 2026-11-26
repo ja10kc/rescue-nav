@@ -144,7 +144,7 @@
     } else {
       setText('targetSetAt', '');
     }
-    ['gmapBtn', 'copyDDBtn', 'copyDMSBtn'].forEach((id) => { $(id).disabled = !t; });
+    $('gmapBtn').disabled = !t;
     $('undoBtn').disabled = S.history.length === 0;
     $('histBtn').disabled = S.history.length === 0;
     setText('histCount', S.history.length);
@@ -1570,7 +1570,7 @@
   /* =========================================================
    * テストモード（手動座標指定・模擬移動）
    * ========================================================= */
-  const sim = { lat: null, lon: null, hdg: 45, running: false, timer: null };
+  const sim = { lat: null, lon: null, hdg: 45, running: false, timer: null, home: null, wpSnap: null };
 
   function simEmit(speedMs) {
     ingest({
@@ -1580,6 +1580,7 @@
   }
   function simPlace(lat, lon) {
     sim.lat = lat; sim.lon = lon;
+    sim.home = { lat, lon }; // 「最初からやり直す」で戻る開始位置
     if (S.target) sim.hdg = Geo.inverse(lat, lon, S.target.lat, S.target.lon).bearing;
     $('simStart').value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
     simEmit(0);
@@ -1632,17 +1633,48 @@
     $('testBanner').hidden = false;
     $('testBtn').classList.add('pill-on');
     $('testBtn').textContent = 'テストモード 終了';
-    if (sim.lat == null) {
-      if (last) simPlace(last.lat, last.lon);
-      else if (S.target) simAutoStart();
-    } else simEmit(0);
+    // テスト開始時の経由地の通過状況を記録（終了時・やり直し時に元へ戻す）
+    sim.wpSnap = S.wps.map((w) => [w.id, w.done]);
+    // 毎回まっさらな状態から開始：実GPSの位置 → なければ現場から20km南西
+    sim.lat = sim.lon = null; sim.home = null; sim.hdg = 45;
+    $('simStart').value = '';
+    if (last) simPlace(last.lat, last.lon);
+    else if (S.target) simAutoStart();
+    clearInterval(sim.timer);
     sim.timer = setInterval(simTick, 1000);
     $('testPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     scheduleRender();
   }
+  /** テスト中に変わった経由地の通過状況を、テスト開始時の状態に戻す */
+  function restoreWpSnap() {
+    if (!sim.wpSnap) return false;
+    const snap = new Map(sim.wpSnap);
+    let changed = false;
+    S.wps.forEach((w) => {
+      const v = snap.has(w.id) ? snap.get(w.id) : false;
+      if (w.done !== v) { w.done = v; changed = true; }
+    });
+    S.wpNear = null;
+    if (changed) wpChanged();
+    return changed;
+  }
+  /** 「最初からやり直す」：停止 → 経由地を元に戻す → 開始位置へ */
+  function simReset() {
+    simStop();
+    restoreWpSnap();
+    S.pos = null; S.lastHeading = null;
+    if (sim.home) simPlace(sim.home.lat, sim.home.lon);
+    else if (S.target) simAutoStart();
+    if (S.follow) navView(false); else setFollow(true);
+    toast('テストを最初の状態に戻しました');
+  }
   function exitTest() {
     simStop();
     clearInterval(sim.timer); sim.timer = null;
+    const wpRestored = restoreWpSnap();
+    sim.wpSnap = null;
+    sim.lat = sim.lon = null; sim.home = null; // 模擬位置をクリア
+    $('simStart').value = '';
     simTapArmed = false; $('mapTapHint').hidden = true;
     S.testMode = false;
     S.pos = null; S.lastHeading = null;
@@ -1651,7 +1683,7 @@
     $('testBtn').classList.remove('pill-on');
     $('testBtn').textContent = 'テストモード';
     startGPS();
-    toast('実GPSに戻しました');
+    toast(wpRestored ? '実GPSに戻しました（経由地の通過状況もテスト前に戻しました）' : '実GPSに戻しました', 3500);
     scheduleRender();
   }
 
@@ -1695,17 +1727,6 @@
   /* =========================================================
    * その他：コピー・Googleマップ・テーマ
    * ========================================================= */
-  async function copyText(txt) {
-    let ok = false;
-    try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) {
-      const ta = document.createElement('textarea');
-      ta.value = txt; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, txt.length);
-      try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
-      ta.remove();
-    }
-    toast(ok ? `コピーしました：${txt}` : `コピーできませんでした：${txt}`, 3000);
-  }
   /**
    * Googleマップを開く
    *  ホーム画面アプリ（PWA）から https のリンクを開くと、アプリ内ブラウザ（左上に×）が残ってしまうため、
@@ -1810,8 +1831,6 @@
       if (b) restoreHistory(parseInt(b.dataset.idx, 10));
     });
     $('gmapBtn').onclick = openGoogleMaps;
-    $('copyDDBtn').onclick = () => S.target && copyText(ddText(S.target));
-    $('copyDMSBtn').onclick = () => S.target && copyText(dmsText(S.target));
     $('elevRetryBtn').onclick = () => { if (S.target) { delete S.elevCache[elevKey(S.target.lat, S.target.lon)]; fetchElevation(); } };
 
     $('recenterBtn').onclick = () => setFollow(true);
@@ -1842,6 +1861,7 @@
     $('simAutoStartBtn').onclick = simAutoStart;
     $('simRunBtn').onclick = simStart;
     $('simStopBtn').onclick = simStop;
+    $('simResetBtn').onclick = simReset;
   }
 
   /* =========================================================
