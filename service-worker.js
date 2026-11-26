@@ -4,10 +4,11 @@
  *   地図タイル : キャッシュ優先（一度表示/保存した範囲はオフラインでも表示）
  *   標高API    : ネットワーク優先 → 失敗時キャッシュ
  * ========================================================= */
-const CACHE_VERSION = 'v1.9.0';
+const CACHE_VERSION = 'v1.10.1';
 const APP_CACHE = `rescue-nav-app-${CACHE_VERSION}`;
 const TILE_CACHE = 'rescue-nav-tiles';
 const DATA_CACHE = 'rescue-nav-data';
+const AIR_CACHE = 'rescue-nav-airspace'; // 空域データ（アプリ終了時も消さない）
 const TILE_LIMIT = 8000;
 
 const APP_FILES = [
@@ -80,6 +81,22 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = req.url;
+
+  // 空域データ（航空局・地理院地図）：保存済みを即返し、裏で最新に更新
+  if (/\/xyz\/kokuarea/.test(url)) {
+    event.respondWith((async () => {
+      const cache = await caches.open(AIR_CACHE);
+      const hit = await cache.match(url);
+      const net = fetch(req).then((res) => {
+        if (res && (res.ok || res.status === 404)) cache.put(url, res.clone());
+        return res;
+      }).catch(() => null);
+      if (hit) { event.waitUntil(net); return hit; }
+      const res = await net;
+      return res || new Response('', { status: 504, statusText: 'offline' });
+    })());
+    return;
+  }
 
   // 地図タイル：キャッシュ優先
   if (isTile(url)) {

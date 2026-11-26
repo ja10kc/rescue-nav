@@ -47,9 +47,6 @@
           <h2>救助現場</h2>
           <span id="targetSetAt" class="muted small"></span>
         </div>
-        <div class="btn-row route-row">
-          <button id="routeQrBtn" class="btn btn-lg route-btn" type="button">📷 ブリーフィングのルートをQRで読込</button>
-        </div>
 
         <!-- 確定済み表示（折りたたみ状態） -->
         <div id="targetView">
@@ -68,8 +65,9 @@
           <div class="btn-row">
             <button id="editBtn" class="btn btn-warn btn-lg" type="button">✎ 現場座標を変更（再入力）</button>
           </div>
-          <div class="btn-row">
-            <button id="gmapBtn" class="btn btn-lg" type="button" disabled>Googleマップで現場を開く</button>
+          <div class="btn-row two">
+            <button id="gmapBtn" class="btn btn-lg btn-2line" type="button" disabled>🗺 Googleマップ<br><small>で現場を開く</small></button>
+            <button id="routeQrBtn" class="btn btn-lg btn-2line route-btn" type="button">📷 QRで読み込み<br><small>ブリーフィングのルート</small></button>
           </div>
           <div class="btn-row two">
             <button id="undoBtn" class="btn" type="button" disabled>↶ 1つ前の座標に戻す</button>
@@ -80,6 +78,7 @@
 
         <!-- 入力フォーム（展開状態） -->
         <form id="targetForm" class="target-form" hidden autocomplete="off">
+          <button id="routeQrBtn2" class="btn route-btn" type="button">📷 QRで読み込み（ブリーフィングのルート）</button>
           <div class="mode-row" role="group" aria-label="入力した地点の使い方">
             <button id="modeTarget" class="mode-btn active" type="button">◎ 現場として設定</button>
             <button id="modeWp" class="mode-btn" type="button">＋ 経由地として追加</button>
@@ -309,6 +308,19 @@
         <button id="fitBtn" class="btn map-btn" type="button">全体表示</button>
         <button id="oldBtn" class="btn map-btn" type="button">旧現場 表示</button>
         <button id="cacheBtn" class="btn map-btn" type="button">現場周辺の地図を保存</button>
+        <button id="airBtn" class="btn map-btn" type="button">空域 表示 ON</button>
+      </div>
+      <div id="airInfo" class="air-info" hidden></div>
+      <!-- 空域の参考表示パネル -->
+      <div id="airPanel" class="air-panel" hidden>
+        <div class="air-head">
+          <label class="air-master"><input id="airShow" type="checkbox"> 空域を表示</label>
+          <button id="airCloseBtn" class="btn-mini" type="button">✕</button>
+        </div>
+        <div id="airList" class="air-list"></div>
+        <button id="airSaveBtn" class="btn" type="button">九州全域の空域データを保存</button>
+        <div id="airStatus" class="small muted"></div>
+        <div class="air-note">国土交通省航空局のデータ（地理院地図で公開）による<b>参考表示</b>です。誤差を含む場合があります。正確な空域はAIP・航空図・管轄の管制機関で確認してください。地図上の空域をタップすると種類を表示します。</div>
       </div>
       <div id="mapTapHint" class="map-hint" hidden>地図をタップして自機の位置を指定</div>
     </section>

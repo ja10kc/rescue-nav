@@ -436,6 +436,7 @@
     }
     S.mapPick = true;
     simTapArmed = false;
+    hideAirInfo();
     if (pickPrevFollow === null) pickPrevFollow = S.follow;
     if (S.follow) setFollow(false); // 指定中は地図を自機に追従させない
     $('mapTapHint').textContent = '地図をタップして現場を指定（ピンはドラッグで微調整）';
@@ -1404,6 +1405,12 @@
     setLayer(S.layer);
     wpLayer = L.layerGroup().addTo(map);
     buildRing();
+    // 空域の参考表示
+    applyAirVisibility();
+    map.on('moveend zoomend', () => { if (air.show) loadAirForView(); });
+    setTimeout(() => { // 九州全域の空域データを2週間ごとに自動で保存し直す（電波があるとき）
+      if (navigator.onLine && Date.now() - LS.get('airSavedAt', 0) > 14 * 86400000) prefetchAirKyushu(false);
+    }, 15000);
 
     // ドラッグで自由にスクロール → 追従OFF（「現在位置に戻る」で復帰）
     window.__rnMap = map; // 動作確認用
@@ -1417,6 +1424,8 @@
         toast('自機の模擬位置を配置しました');
       } else if (S.mapPick) {
         pickAt(e.latlng.lat, e.latlng.lng);
+      } else {
+        airInfoAt(e.latlng); // タップした地点の空域を表示
       }
     });
     setFollow(S.follow);
@@ -1735,6 +1744,221 @@
   };
   function tileUrl(tpl, z, x, y) { return tpl.replace('{z}', z).replace('{x}', x).replace('{y}', y); }
 
+  /* =========================================================
+   * 空域の参考表示（国土交通省航空局のデータ・地理院地図で公開）
+   *   GeoJSONタイル（ズーム8のみ）を取得して地図に重ねる。
+   *   取得したデータは端末に保存（service-worker の空域キャッシュ）し、電波がなくても表示できる。
+   *   ※参考表示。正確な空域は AIP・航空図・管轄の管制機関で確認すること。
+   * ========================================================= */
+  const AIR_HOSTS = ['https://cyberjapandata.gsi.go.jp', 'https://maps.gsi.go.jp'];
+  const AIR_Z = 8;
+  const AIR_LAYERS = [
+    { id: 'kokuarea_kanseikentou', name: '管制圏・情報圏', color: '#2f6fde', on: true },
+    { id: 'kokuarea_shinnyuukanseiku', name: '進入管制区', color: '#9b59b6', on: true, dash: '10 6' },
+    { id: 'kokuarea_tokubetsukanseiku', name: '特別管制区', color: '#e0245e', on: true },
+    { id: 'kokuarea_minkankunren', name: '民間訓練試験空域', color: '#e67e22', on: true, dash: '4 6' },
+    { id: 'kokuarea', name: '空港等の周辺空域（ドローン用 制限表面）', color: '#19a35a', on: false },
+  ];
+  const KYUSHU_BOX = { s: 26.5, n: 34.9, w: 127.6, e: 132.4 };
+  const air = {
+    show: LS.get('airShow', true),
+    layers: Object.assign(Object.fromEntries(AIR_LAYERS.map((l) => [l.id, l.on])), LS.get('airLayers', {})),
+    tiles: {},        // 'layer/x/y' -> 'loading' | 'ok' | 'none' | 'error'
+    feats: {},        // layer -> Map(hash -> feature)
+    groups: {},       // layer -> L.GeoJSON
+    pending: 0, errors: 0,
+  };
+
+  async function gunzipIfNeeded(u8) {
+    if (u8[0] === 0x1f && u8[1] === 0x8b && typeof DecompressionStream !== 'undefined') {
+      const s = new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'));
+      return new Uint8Array(await new Response(s).arrayBuffer());
+    }
+    return u8;
+  }
+  /** 1タイル取得（無い場所は 404 → null） */
+  async function fetchAirTile(layer, x, y) {
+    let lastErr = null;
+    for (const host of AIR_HOSTS) {
+      try {
+        const r = await fetch(`${host}/xyz/${layer}/${AIR_Z}/${x}/${y}.geojson`);
+        if (r.status === 404) return null;
+        if (!r.ok) { lastErr = new Error('HTTP ' + r.status); continue; }
+        const u8 = await gunzipIfNeeded(new Uint8Array(await r.arrayBuffer()));
+        const text = new TextDecoder().decode(u8).trim();
+        if (!text) return null;
+        return JSON.parse(text);
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('取得失敗');
+  }
+
+  function airStyle(L0) {
+    return () => ({ color: L0.color, weight: 2.5, opacity: 0.95, fillColor: L0.color, fillOpacity: 0.07, dashArray: L0.dash || null, interactive: false });
+  }
+  function ensureAirGroups() {
+    if (!map || air.groups[AIR_LAYERS[0].id]) return;
+    // 回転地図では「回転する層」の中に置く（機首方向が上でも地図と一緒に回るように）
+    if (!map.getPane('airspacePane')) {
+      const parent = map.getPane('rotatePane') || map.getPane('mapPane');
+      const pane = map.createPane('airspacePane', parent);
+      pane.style.zIndex = 350; // 地図(200)より上、ルート線(400)より下
+      pane.style.pointerEvents = 'none';
+    }
+    AIR_LAYERS.forEach((L0) => {
+      air.feats[L0.id] = new Map();
+      air.groups[L0.id] = L.geoJSON(null, { pane: 'airspacePane', style: airStyle(L0), interactive: false });
+    });
+  }
+  function applyAirVisibility() {
+    if (!map) return;
+    ensureAirGroups();
+    AIR_LAYERS.forEach((L0) => {
+      const g = air.groups[L0.id];
+      const want = air.show && air.layers[L0.id];
+      if (want && !map.hasLayer(g)) g.addTo(map);
+      if (!want && map.hasLayer(g)) map.removeLayer(g);
+    });
+    const attr = '空域：国土交通省航空局（地理院地図）参考表示';
+    if (map.attributionControl && air.show !== !!air.attrOn) { // 二重登録しない
+      if (air.show) map.attributionControl.addAttribution(attr); else map.attributionControl.removeAttribution(attr);
+      air.attrOn = air.show;
+    }
+    if (!air.show) hideAirInfo();
+    renderAirPanel();
+    if (air.show) loadAirForView();
+  }
+  function addAirData(layer, gj) {
+    if (!gj) return;
+    const feats = gj.type === 'FeatureCollection' ? gj.features || [] : gj.type === 'Feature' ? [gj] : [];
+    const store = air.feats[layer], group = air.groups[layer];
+    feats.forEach((f) => {
+      if (!f || !f.geometry) return;
+      const key = JSON.stringify(f.geometry); // 隣のタイルと重複する地物は1つにまとめる
+      if (store.has(key)) return;
+      store.set(key, f);
+      group.addData(f);
+    });
+  }
+  /** 表示範囲（＋周辺）に必要なタイルを読み込む */
+  function loadAirForView() {
+    if (!map || !air.show) return;
+    ensureAirGroups();
+    const b = map.getBounds().pad(0.5);
+    const x0 = lon2x(b.getWest(), AIR_Z), x1 = lon2x(b.getEast(), AIR_Z);
+    const y0 = lat2y(Math.min(85, b.getNorth()), AIR_Z), y1 = lat2y(Math.max(-85, b.getSouth()), AIR_Z);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 60) return; // 広域表示すぎるときは読まない
+    AIR_LAYERS.filter((L0) => air.layers[L0.id]).forEach((L0) => {
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+        const k = `${L0.id}/${x}/${y}`;
+        const st = air.tiles[k];
+        if (st === 'loading' || st === 'ok' || st === 'none') continue;
+        air.tiles[k] = 'loading'; air.pending++;
+        fetchAirTile(L0.id, x, y)
+          .then((gj) => { air.tiles[k] = gj ? 'ok' : 'none'; addAirData(L0.id, gj); })
+          .catch(() => { air.tiles[k] = 'error'; air.errors++; })
+          .finally(() => { air.pending--; renderAirPanel(); });
+      }
+    });
+    renderAirPanel();
+  }
+  /** 九州全域の空域データを端末に保存（電波がない場所でも表示できるように） */
+  async function prefetchAirKyushu(manual) {
+    const list = [];
+    const x0 = lon2x(KYUSHU_BOX.w, AIR_Z), x1 = lon2x(KYUSHU_BOX.e, AIR_Z);
+    const y0 = lat2y(KYUSHU_BOX.n, AIR_Z), y1 = lat2y(KYUSHU_BOX.s, AIR_Z);
+    AIR_LAYERS.forEach((L0) => { for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) list.push([L0.id, x, y]); });
+    let ok = 0, fail = 0;
+    const btn = $('airSaveBtn');
+    if (btn) btn.disabled = true;
+    const worker = async () => {
+      while (list.length) {
+        const [l, x, y] = list.shift();
+        try { await fetchAirTile(l, x, y); ok++; } catch (e) { fail++; }
+        if (btn && (ok + fail) % 10 === 0) btn.textContent = `保存中… ${ok + fail}`;
+      }
+    };
+    await Promise.all([1, 2, 3, 4].map(worker));
+    if (btn) { btn.disabled = false; btn.textContent = '九州全域の空域データを保存'; }
+    if (!fail) LS.set('airSavedAt', Date.now());
+    if (manual) toast(fail ? `空域データの保存：${fail}件失敗（電波を確認してください）` : '九州全域の空域データを保存しました', 3500);
+    renderAirPanel();
+    // 取得し直したデータで表示を更新
+    Object.keys(air.tiles).forEach((k) => { if (air.tiles[k] === 'error') delete air.tiles[k]; });
+    loadAirForView();
+  }
+
+  /* ---------- タップした地点の空域を表示 ---------- */
+  function ringContains(ring, x, y) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+      if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  function geomContains(g, lon, lat) {
+    if (!g) return false;
+    const poly = (rings) => rings.length && ringContains(rings[0], lon, lat) && !rings.slice(1).some((h) => ringContains(h, lon, lat));
+    if (g.type === 'Polygon') return poly(g.coordinates);
+    if (g.type === 'MultiPolygon') return g.coordinates.some(poly);
+    if (g.type === 'GeometryCollection') return (g.geometries || []).some((x) => geomContains(x, lon, lat));
+    return false;
+  }
+  function airInfoAt(latlng) {
+    if (!map || !air.show) return false;
+    const rows = [];
+    AIR_LAYERS.filter((L0) => air.layers[L0.id] && air.feats[L0.id]).forEach((L0) => {
+      air.feats[L0.id].forEach((f) => {
+        if (!geomContains(f.geometry, latlng.lng, latlng.lat)) return;
+        const props = Object.entries(f.properties || {}).filter(([k, v]) => !k.startsWith('_') && v !== '' && v != null && typeof v !== 'object');
+        rows.push(`<div class="air-pop-item"><span class="air-sw" style="background:${L0.color}"></span><b>${esc(L0.name)}</b>
+          ${props.length ? '<table>' + props.slice(0, 8).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('') + '</table>' : ''}</div>`);
+      });
+    });
+    if (!rows.length) { hideAirInfo(); return false; }
+    // 地図の下部に固定のカードで表示（地図が自機に追従して動いても隠れない）
+    const box = $('airInfo');
+    box.innerHTML = `<button type="button" class="btn-mini air-info-x" aria-label="閉じる">✕</button>${rows.join('')}
+      <div class="air-pop-note">参考表示（誤差を含む場合あり）。正確な空域はAIP・航空図・管制機関で確認</div>`;
+    box.hidden = false;
+    box.querySelector('.air-info-x').onclick = hideAirInfo;
+    clearTimeout(air.infoTimer);
+    air.infoTimer = setTimeout(hideAirInfo, 12000);
+    return true;
+  }
+  function hideAirInfo() { const b = $('airInfo'); if (b) b.hidden = true; clearTimeout(air.infoTimer); }
+
+  /* ---------- 表示切替パネル ---------- */
+  function renderAirPanel() {
+    const p = $('airPanel');
+    if (!p) return;
+    const b = $('airBtn');
+    b.classList.toggle('on', air.show);
+    b.textContent = air.show ? '空域 表示 ON' : '空域 表示 OFF';
+    if (p.hidden) return;
+    const saved = LS.get('airSavedAt', 0);
+    const d = saved ? new Date(saved) : null;
+    $('airList').innerHTML = AIR_LAYERS.map((L0) => `
+      <label class="air-row"><input type="checkbox" data-air="${L0.id}" ${air.layers[L0.id] ? 'checked' : ''}>
+        <span class="air-sw" style="background:${L0.color}"></span><span>${esc(L0.name)}</span></label>`).join('');
+    setText('airStatus', `${air.pending ? '読込中… ' : ''}${air.errors ? '一部取得できませんでした（電波がない場合は保存済みのデータのみ表示）　' : ''}`
+      + (d ? `九州全域：${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} 保存済み` : '九州全域：未保存'));
+  }
+  function setupAirUi() {
+    $('airBtn').onclick = () => { const p = $('airPanel'); p.hidden = !p.hidden; renderAirPanel(); };
+    $('airShow').checked = air.show;
+    $('airShow').onchange = (e) => { air.show = e.target.checked; LS.set('airShow', air.show); applyAirVisibility(); };
+    $('airList').addEventListener('change', (e) => {
+      const id = e.target.dataset && e.target.dataset.air;
+      if (!id) return;
+      air.layers[id] = e.target.checked; LS.set('airLayers', air.layers);
+      applyAirVisibility();
+    });
+    $('airSaveBtn').onclick = () => prefetchAirKyushu(true);
+    $('airCloseBtn').onclick = () => { $('airPanel').hidden = true; };
+  }
+
   async function cacheTiles() {
     const t = S.target;
     if (!t) { toast('先に現場座標を設定してください'); return; }
@@ -2026,8 +2250,10 @@
    * ========================================================= */
   function bind() {
     $('editBtn').onclick = () => openEdit('target');
+    setupAirUi();
     // ブリーフィングのルート（QR）
     $('routeQrBtn').onclick = openScanner;
+    $('routeQrBtn2').onclick = openScanner;
     $('qrClose').onclick = closeScanner;
     $('qrPasteBtn').onclick = pasteRoute;
     window.addEventListener('hashchange', checkHashRoute);
@@ -2113,6 +2339,7 @@
     $('simTapBtn').onclick = () => {
       if (!map) { toast('地図が利用できません。座標入力で配置してください'); return; }
       simTapArmed = true;
+      hideAirInfo();
       $('mapTapHint').textContent = '地図をタップして自機の位置を指定';
       $('mapTapHint').hidden = false;
     };

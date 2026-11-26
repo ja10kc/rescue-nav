@@ -206,6 +206,7 @@ body {
   position: absolute; top: 66px; left: 50%; transform: translateX(-50%); z-index: 600;
   width: max-content; max-width: calc(100% - 360px); min-width: 200px; text-align: center;
   background: var(--warn); color: var(--warn-text); padding: 10px 14px; border-radius: 12px; font-size: 15px;
+  pointer-events: none; /* 案内の下の地図もタップできるように */
   font-weight: 800; animation: pulse 1.2s infinite;
 }
 .map-fallback {
@@ -402,7 +403,6 @@ body {
 }
 
 /* ---------- ブリーフィングのルートQR ---------- */
-.route-row { margin: 0 0 8px; }
 .route-btn { background: #2f6fde; color: #fff; border-color: #2f6fde; }
 .qr-modal { position: fixed; inset: 0; z-index: 1900; background: rgba(0,0,0,.82); display: flex; align-items: center; justify-content: center; padding: 16px; }
 .qr-box { width: min(720px, 100%); max-height: 100%; overflow-y: auto; background: var(--panel); border: 2px solid var(--line); border-radius: 16px; padding: 14px; display: grid; gap: 10px; }
@@ -420,3 +420,30 @@ body {
 .rk-badge { font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 6px; color: #fff; white-space: nowrap; }
 .rk-badge.rk-B { background: #7d8794; } .rk-badge.rk-W { background: #2f6fde; } .rk-badge.rk-S { background: var(--route); }
 tr.rk-B { opacity: .75; }
+
+/* ---------- 空域の参考表示 ---------- */
+.air-panel {
+  position: absolute; right: 10px; top: 70px; z-index: 620; width: min(330px, calc(100% - 90px));
+  background: var(--panel); border: 2px solid var(--line); border-radius: 14px; padding: 12px; box-shadow: var(--shadow);
+  display: grid; gap: 8px; max-height: calc(100% - 90px); overflow-y: auto;
+}
+.air-head { display: flex; justify-content: space-between; align-items: center; }
+.air-master { font-weight: 900; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+.air-master input, .air-row input { width: 24px; height: 24px; }
+.air-list { display: grid; gap: 4px; }
+.air-row { display: flex; align-items: center; gap: 8px; min-height: 40px; font-weight: 700; font-size: 15px; }
+.air-sw { width: 18px; height: 18px; border-radius: 4px; flex: 0 0 auto; border: 2px solid rgba(255,255,255,.7); display: inline-block; }
+.air-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.air-info {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(110px + env(safe-area-inset-bottom)); z-index: 615;
+  width: min(360px, calc(100% - 40px)); background: var(--panel); color: var(--text); border: 2px solid var(--line);
+  border-radius: 14px; padding: 10px 40px 8px 12px; box-shadow: var(--shadow); font-size: 15px;
+}
+.air-info-x { position: absolute; right: 8px; top: 8px; }
+.air-pop-item { margin-bottom: 6px; }
+.air-pop-item b { margin-left: 4px; }
+.air-pop-item table { font-size: 12px; margin-top: 2px; }
+.air-pop-item td { padding: 0 6px 0 0; color: var(--muted); }
+.air-pop-note { font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 4px; }
+.btn-2line { line-height: 1.25; padding: 6px 8px; }
+.btn-2line small { font-size: 13px; font-weight: 700; opacity: .9; }
