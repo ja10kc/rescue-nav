@@ -81,6 +81,10 @@
 
         <!-- 入力フォーム（展開状態） -->
         <form id="targetForm" class="target-form" hidden autocomplete="off">
+          <div class="mode-row" role="group" aria-label="入力した地点の使い方">
+            <button id="modeTarget" class="mode-btn active" type="button">◎ 現場として設定</button>
+            <button id="modeWp" class="mode-btn" type="button">＋ 経由地として追加</button>
+          </div>
           <!-- 度分秒の個別入力（桁がそろうと自動で次のボックスへ） -->
           <div class="dms-block">
             <div class="dms-title">度分秒で入力 <span class="muted small">（桁がそろうと自動で次へ進みます）</span></div>
@@ -156,14 +160,15 @@
       <!-- ダッシュボード -->
       <div class="dash">
         <div class="tile tile-wide tile-dist">
-          <div class="tile-lbl">現場までの残り直線距離</div>
+          <div class="tile-lbl" id="dDistLbl">現場までの残り直線距離</div>
           <div class="tile-row">
             <div class="big"><span id="dKm">--.--</span><small>km</small></div>
             <div class="big sub"><span id="dNm">--.--</span><small>NM</small></div>
           </div>
+          <div class="tile-sub wp-total" id="dTotal"></div>
         </div>
         <div class="tile">
-          <div class="tile-lbl">現場への指示方位（真方位・北=360）</div>
+          <div class="tile-lbl" id="dBrgLbl">現場への指示方位（真方位・北=360）</div>
           <div class="big"><span id="dBrg">---</span><small>°</small></div>
           <div class="tile-sub"><span id="dCard">--</span>　<span id="dRel"></span></div>
         </div>
@@ -173,7 +178,7 @@
           <div class="tile-sub"><span id="dKmh">---</span> km/h　進行方位 <span id="dHdg">---</span>°</div>
         </div>
         <div class="tile">
-          <div class="tile-lbl">到着予想（ETE）</div>
+          <div class="tile-lbl" id="dEteLbl">到着予想（ETE）</div>
           <div class="big"><span id="dEte">--:--</span></div>
           <div class="tile-sub">ETA <span id="dEta">--:--</span></div>
         </div>
@@ -196,6 +201,27 @@
           <div class="tile-sub mono big-mono"><span id="pLat">--</span>, <span id="pLon">--</span></div>
           <div class="tile-sub mono"><span id="pDMS">--</span></div>
         </div>
+      </div>
+
+      <!-- 経由地（ウェイポイント） -->
+      <div class="card wp-card">
+        <div class="card-head"><h2>経由地（ウェイポイント）</h2><span id="wpCount" class="muted small"></span></div>
+        <div id="wpNav"></div>
+        <ul id="wpList" class="wp-list"></ul>
+        <div class="btn-row">
+          <button id="wpAddBtn" class="btn btn-lg" type="button">＋ 経由地を追加</button>
+        </div>
+        <div class="wp-foot">
+          <label class="wp-radius">通過点の通過判定
+            <select id="wpRadius">
+              <option value="0.3">0.3 km</option>
+              <option value="0.5">0.5 km</option>
+              <option value="1">1.0 km</option>
+            </select>
+          </label>
+          <button id="wpClearBtn" class="btn" type="button" disabled>すべて削除</button>
+        </div>
+        <div class="small muted" style="margin-top:6px">青＝通過点（判定距離に入ると自動で次へ）／橙＝立寄り点（揚収・RP。作業後に「次へ」）。種別のボタンで切り替え、名前をタップすると名前を変更できます。</div>
       </div>
 
       <!-- テストモード操作パネル -->
@@ -229,7 +255,7 @@
             <input id="simAlt" type="number" inputmode="numeric" value="1500">
           </label>
         </div>
-        <label class="check"><input id="simAuto" type="checkbox" checked> 現場へ向かって自動飛行</label>
+        <label class="check"><input id="simAuto" type="checkbox" checked> 経由地→現場の順に自動飛行</label>
         <label class="field">
           <span>手動進行方位 [°]（自動飛行OFF時）</span>
           <input id="simHdg" type="number" inputmode="numeric" value="45" min="0" max="359">

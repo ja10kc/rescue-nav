@@ -66,6 +66,10 @@
     ptsPrev: LS.get('ptsPrev', null),  // 1つ前の一覧（元に戻す用）
     sel: null,                         // 検索結果・地図で選んだ地点
     mapPick: false,                    // 地図タップで現場を指定中
+    wps: LS.get('wps', []),            // 経由地 [{id,lat,lon,name,note,kind:'pass'|'stop',done}]
+    wpRadius: LS.get('wpRadius', 0.5), // 通過判定の距離[km]
+    wpNear: null,                      // 到着圏内の立寄り点id
+    formMode: 'target',                // 入力画面：'target'=現場 / 'wp'=経由地
     pos: null,              // 最新の自機位置
     lastHeading: null,
     gpsWatch: null,
@@ -147,6 +151,7 @@
     $('editBtn').textContent = t ? '✎ 現場座標を変更（再入力）' : '✎ 現場座標を入力';
     renderHistory();
     renderElev();
+    if ($('wpList')) renderWps();
   }
 
   function renderHistory() {
@@ -581,12 +586,204 @@
     } catch (e) { toast('テンプレートを取得できませんでした（一度オンラインで開いてください）', 3500); }
   }
 
-  function openEdit() {
+  /* =========================================================
+   * 経由地（ウェイポイント）
+   *   通過点：谷筋・稜線を避ける経路用。通過判定距離に入ると自動で次へ
+   *   立寄り点：揚収・ランデブーポイント用。自動では進まず「次へ」で進む
+   * ========================================================= */
+  const WP_MAX = 10;
+  const KIND_JA = { pass: '通過点', stop: '立寄り点' };
+  const wpActive = () => S.wps.find((w) => !w.done) || null;
+  const wpNo = (w) => S.wps.indexOf(w) + 1;
+  const wpLabel = (w) => `WP${wpNo(w)}`;
+  const wpTitle = (w) => wpLabel(w) + (w.name ? ' ' + w.name : '');
+  const saveWps = () => LS.set('wps', S.wps);
+
+  /** 今向かっている地点（次の経由地 → なければ現場） */
+  function navDest() {
+    const w = wpActive();
+    if (w) return { lat: w.lat, lon: w.lon, label: wpLabel(w), name: w.name, wp: w };
+    if (S.target) return { lat: S.target.lat, lon: S.target.lon, label: '現場', name: S.target.name || '', wp: null };
+    return null;
+  }
+  /** これから回る地点の列（次の経由地 … 現場） */
+  function remainingRoute() {
+    const pts = S.wps.filter((w) => !w.done).map((w) => [w.lat, w.lon]);
+    if (S.target) pts.push([S.target.lat, S.target.lon]);
+    return pts;
+  }
+  /** 自機から残りの経路を回った合計距離[m] */
+  function remainingTotal(p) {
+    const pts = [[p.lat, p.lon]].concat(remainingRoute());
+    let sum = 0;
+    for (let i = 1; i < pts.length; i++) sum += Geo.inverse(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]).distance;
+    return sum;
+  }
+
+  function wpChanged() {
+    saveWps(); renderWps(); updateMapObjects(); scheduleRender();
+  }
+  function addWaypoint(p) {
+    if (S.wps.length >= WP_MAX) {
+      infoModal(`経由地は最大${WP_MAX}か所です`, '不要な経由地を削除してから追加してください。');
+      return null;
+    }
+    const looksStop = p.src === '登録地点' || /ランデブー|ＲＰ|RP|揚収|場外|ヘリポート|立寄/i.test(`${p.name || ''}${p.type || ''}`);
+    const w = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      lat: p.lat, lon: p.lon, name: p.name || '', note: p.note || '',
+      kind: looksStop ? 'stop' : 'pass', done: false,
+    };
+    S.wps.push(w);
+    wpChanged();
+    return w;
+  }
+
+  /** 位置更新のたびに：通過点の自動通過・立寄り点への接近を判定 */
+  function checkWp() {
+    const w = wpActive(), p = S.pos;
+    if (!w || !p) { S.wpNear = null; return; }
+    const d = Geo.inverse(p.lat, p.lon, w.lat, w.lon).distance;
+    const r = S.wpRadius * 1000;
+    if (w.kind === 'pass') {
+      if (d <= r) {
+        const lbl = wpLabel(w);
+        w.done = true;
+        const nx = navDest();
+        toast(`${lbl} 通過 → 次は ${nx ? nx.label + (nx.name ? '（' + nx.name + '）' : '') : '（なし）'}`, 4000);
+        wpChanged();
+      }
+    } else if (d <= r) {
+      if (S.wpNear !== w.id) {
+        S.wpNear = w.id;
+        toast(`${wpTitle(w)}（立寄り点）に到着圏内。作業が終わったら「次へ」を押してください`, 6000);
+        renderWps();
+      }
+    } else if (S.wpNear === w.id && d > r * 1.5) { S.wpNear = null; renderWps(); }
+  }
+
+  function wpNext() {
+    const w = wpActive();
+    if (!w) return;
+    w.done = true; S.wpNear = null;
+    const nx = navDest();
+    toast(`${wpLabel(w)} 完了 → 次は ${nx ? nx.label + (nx.name ? '（' + nx.name + '）' : '') : '（なし）'}`, 3500);
+    wpChanged();
+  }
+  function wpPrev() {
+    const done = S.wps.filter((w) => w.done);
+    if (!done.length) return;
+    const w = done[done.length - 1];
+    w.done = false; S.wpNear = null;
+    toast(`${wpLabel(w)} に戻しました`);
+    wpChanged();
+  }
+  async function wpDirect() {
+    const rest = S.wps.filter((w) => !w.done);
+    if (!rest.length) return;
+    const ok = await confirmModal('現場へ直行しますか？', `残りの経由地（${rest.map(wpLabel).join('・')}）をとばして、現場へ直接誘導します。<br><span class="small muted">「前へ」で経由地に戻せます。</span>`, '直行する');
+    if (!ok) return;
+    rest.forEach((w) => { w.done = true; });
+    S.wpNear = null;
+    toast('現場へ直行します');
+    wpChanged();
+  }
+  async function wpClear() {
+    if (!S.wps.length) return;
+    const ok = await confirmModal('経由地をすべて削除しますか？', `${S.wps.length}か所の経由地を削除します。`, '削除する');
+    if (!ok) return;
+    S.wps = []; S.wpNear = null;
+    toast('経由地をすべて削除しました');
+    wpChanged();
+  }
+  async function wpAction(act, id) {
+    const i = S.wps.findIndex((w) => w.id === id);
+    if (i < 0) return;
+    const w = S.wps[i];
+    if (act === 'kind') { w.kind = w.kind === 'pass' ? 'stop' : 'pass'; toast(`${wpLabel(w)} を${KIND_JA[w.kind]}にしました`); }
+    else if (act === 'up' && i > 0) { S.wps.splice(i - 1, 0, S.wps.splice(i, 1)[0]); }
+    else if (act === 'down' && i < S.wps.length - 1) { S.wps.splice(i + 1, 0, S.wps.splice(i, 1)[0]); }
+    else if (act === 'del') {
+      const ok = await confirmModal(`${wpTitle(w)} を削除しますか？`, `${Geo.formatDD(w.lat)}, ${Geo.formatDD(w.lon)}`, '削除する');
+      if (!ok) return;
+      S.wps.splice(i, 1);
+    } else if (act === 'name') {
+      const v = window.prompt(`${wpLabel(w)} の名前`, w.name || '');
+      if (v == null) return;
+      w.name = v.trim().slice(0, 40);
+    } else if (act === 'go') {
+      // この経由地から誘導し直す（手前は通過済み、以降は未通過に）
+      S.wps.forEach((x, k) => { x.done = k < i; });
+      S.wpNear = null;
+      toast(`${wpTitle(w)} へ誘導します`);
+    } else return;
+    wpChanged();
+  }
+
+  function renderWps() {
+    const n = S.wps.length;
+    setText('wpCount', n ? `${n} / ${WP_MAX}` : '');
+    const act = wpActive();
+    const nav = $('wpNav');
+    if (!n) {
+      nav.innerHTML = '<div class="q-hint">経由地はありません。谷筋・稜線を避ける経路の指定や、揚収・ランデブーポイントへの立ち寄りに使います。</div>';
+    } else {
+      const near = act && S.wpNear === act.id;
+      nav.innerHTML = `
+        <div class="wp-now${near ? ' near' : ''}">
+          <span class="muted small">誘導中</span>
+          <b>${act ? esc(wpTitle(act)) : '現場' + (S.target && S.target.name ? '（' + esc(S.target.name) + '）' : '')}</b>
+          ${act ? `<span class="wp-kind ${act.kind}">${KIND_JA[act.kind]}</span>` : '<span class="small muted">経由地はすべて完了</span>'}
+          ${near ? '<div class="wp-near">到着圏内です。作業が終わったら「次へ ▶」を押してください</div>' : ''}
+        </div>
+        <div class="btn-row three">
+          <button type="button" class="btn" id="wpPrevBtn" ${S.wps.some((w) => w.done) ? '' : 'disabled'}>◀ 前へ</button>
+          <button type="button" class="btn btn-go" id="wpNextBtn" ${act ? '' : 'disabled'}>次へ ▶</button>
+          <button type="button" class="btn" id="wpDirectBtn" ${act && S.target ? '' : 'disabled'}>現場へ直行</button>
+        </div>`;
+      $('wpPrevBtn').onclick = wpPrev;
+      $('wpNextBtn').onclick = wpNext;
+      $('wpDirectBtn').onclick = wpDirect;
+    }
+    const from = S.pos ? { lat: S.pos.lat, lon: S.pos.lon } : null;
+    $('wpList').innerHTML = S.wps.map((w, i) => {
+      const d = from ? Geo.inverse(from.lat, from.lon, w.lat, w.lon) : null;
+      return `<li class="wp-item${w.done ? ' done' : ''}${w === act ? ' act' : ''}">
+        <span class="wp-no ${w.kind}">${i + 1}</span>
+        <button type="button" class="wp-main" data-act="name" data-id="${w.id}">
+          <span class="wp-name">${esc(w.name || wpLabel(w))}</span>
+          <span class="wp-sub">${w.done ? '完了　' : w === act ? '▶ 誘導中　' : ''}<span id="wpd-${w.id}">${d ? (d.distance / 1000).toFixed(1) + 'km / ' + fmtBrg(d.bearing) : Geo.formatDD(w.lat, 4) + ', ' + Geo.formatDD(w.lon, 4)}</span></span>
+        </button>
+        <button type="button" class="wp-kind ${w.kind}" data-act="kind" data-id="${w.id}">${KIND_JA[w.kind]}</button>
+        <span class="wp-tools">
+          <button type="button" class="btn-mini" data-act="go" data-id="${w.id}" title="ここへ誘導">▶</button>
+          <button type="button" class="btn-mini" data-act="up" data-id="${w.id}" ${i === 0 ? 'disabled' : ''}>▲</button>
+          <button type="button" class="btn-mini" data-act="down" data-id="${w.id}" ${i === n - 1 ? 'disabled' : ''}>▼</button>
+          <button type="button" class="btn-mini danger" data-act="del" data-id="${w.id}">✕</button>
+        </span>
+      </li>`;
+    }).join('') + (S.target ? `<li class="wp-item goal"><span class="wp-no goal">現</span><span class="wp-main"><span class="wp-name">現場${S.target.name ? '（' + esc(S.target.name) + '）' : ''}</span><span class="wp-sub">最終目的地</span></span></li>` : '');
+    $('wpClearBtn').disabled = !n;
+    $('wpAddBtn').disabled = n >= WP_MAX;
+  }
+
+  function setFormMode(m) {
+    S.formMode = m === 'wp' ? 'wp' : 'target';
+    const wp = S.formMode === 'wp';
+    $('modeTarget').classList.toggle('active', !wp);
+    $('modeWp').classList.toggle('active', wp);
+    $('applyBtn').textContent = wp ? '＋ 経由地として追加' : '✔ この座標で確定';
+    const showCancel = wp || !!S.target;
+    $('cancelEditBtn').hidden = !showCancel;
+    $('formBtnRow').classList.toggle('two', showCancel);
+    $('mapPickBtn').textContent = S.mapPick ? '✖ 地図での指定をやめる' : '🗺 地図をタップして指定';
+  }
+  function openEdit(mode) {
     S.editing = true;
     $('targetView').hidden = true;
     $('targetForm').hidden = false;
-    $('cancelEditBtn').hidden = !S.target;
-    $('formBtnRow').classList.toggle('two', !!S.target);
+    setFormMode(mode === 'wp' ? 'wp' : 'target');
+    if (mode === 'wp') $('targetForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
     renderSearch();
     updatePreview();
     focusField('latD'); // タップ操作内で直接フォーカス（iPadでキーボードを開くため）
@@ -635,7 +832,7 @@
       return;
     }
     S.pending = { lat: r.lat, lon: r.lon };
-    if (sel) Object.assign(S.pending, { name: sel.name || '', note: sel.note || '', pref: sel.pref || '', type: sel.type || '' });
+    if (sel) Object.assign(S.pending, { name: sel.name || '', note: sel.note || '', pref: sel.pref || '', type: sel.type || '', src: sel.src || '' });
     const fmtName = sel ? (sel.src === '地図' ? '地図で指定' : `検索結果（${sel.src}）`) : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
     let extra = '';
     if (S.pos) {
@@ -663,6 +860,20 @@
   async function applyPending() {
     const p = S.pending;
     if (!p) return;
+    if (S.formMode === 'wp') {
+      const no = S.wps.length + 1;
+      const ok = await confirmModal(`経由地 WP${no} として追加しますか？`, `
+        ${p.name ? `<div class="pv-name">${esc(p.name)}</div>` : ''}
+        <div class="mono">${Geo.formatDD(p.lat)}, ${Geo.formatDD(p.lon)}</div>
+        <div class="mono">${Geo.formatDMS(p.lat, true)} ${Geo.formatDMS(p.lon, false)}</div>
+        <div class="small muted" style="margin-top:8px">経路の最後（現場の手前）に追加します。順番・種別（通過点／立寄り点）は経由地の一覧で変更できます。</div>`, '追加する');
+      if (!ok) return;
+      const w = addWaypoint(p);
+      if (!w) return;
+      closeEdit();
+      toast(`${wpLabel(w)} を${KIND_JA[w.kind]}として追加しました`, 3500);
+      return;
+    }
     const ok = await confirmModal(S.target ? '現場座標を変更しますか？' : '現場座標を確定しますか？', `
       ${p.name ? `<div class="pv-name">${esc(p.name)}</div>` : ''}
       <div class="mono">${Geo.formatDD(p.lat)}, ${Geo.formatDD(p.lon)}</div>
@@ -837,6 +1048,7 @@
     if (!valid(pos.heading) && S.lastHeading != null) { pos.heading = S.lastHeading; pos.headingHeld = true; }
     if (valid(pos.heading)) S.lastHeading = pos.heading;
     S.pos = pos;
+    checkWp();
     scheduleRender();
   }
 
@@ -883,9 +1095,14 @@
     setText('dKmh', spd != null ? fmtInt(spd * MS2KMH) : '---');
     setText('dHdg', p && valid(p.heading) ? fmtBrg(p.heading) : '---');
 
-    // 距離・方位・ETE
-    if (p && t) {
-      const inv = Geo.inverse(p.lat, p.lon, t.lat, t.lon);
+    // 距離・方位・ETE（次の経由地 or 現場）
+    const dest = navDest();
+    setText('dDistLbl', dest && dest.wp ? `次の経由地 ${dest.label}${dest.name ? '（' + dest.name + '）' : ''} までの残り直線距離` : '現場までの残り直線距離');
+    setText('dBrgLbl', `${dest ? dest.label : '現場'}への指示方位（真方位・北=360）`);
+    setText('dEteLbl', `${dest ? dest.label : '現場'}までの到着予想（ETE）`);
+    document.querySelector('.tile-dist').classList.toggle('wp-mode', !!(dest && dest.wp));
+    if (p && dest) {
+      const inv = Geo.inverse(p.lat, p.lon, dest.lat, dest.lon);
       const km = inv.distance / 1000;
       setText('dKm', km.toFixed(2));
       setText('dNm', (inv.distance / Geo.M_PER_NM).toFixed(2));
@@ -894,20 +1111,32 @@
       setText('dCard', inv.distance < 1 ? '--' : `${card}（${CARD_JA[card]}）`);
       // 現在の進行方位（指示方位との比較用）
       setText('dRel', valid(p.heading) ? `現針路 ${fmtBrg(p.heading)}` : '');
-      if (spd != null && spd >= MIN_SPEED_MS) {
+      const fmtSec = (sec) => { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s2 = sec % 60; return h > 0 ? `${h}:${pad2(m)}:${pad2(s2)}` : `${pad2(m)}:${pad2(s2)}`; };
+      const fast = spd != null && spd >= MIN_SPEED_MS;
+      if (fast) {
         const sec = Math.round(inv.distance / spd);
-        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-        setText('dEte', h > 0 ? `${h}:${pad2(m)}:${pad2(s)}` : `${pad2(m)}:${pad2(s)}`);
+        setText('dEte', fmtSec(sec));
         setText('dEta', hm(Date.now() + sec * 1000));
       } else {
         setText('dEte', spd != null ? '低速' : '--:--');
         setText('dEta', '--:--');
       }
+      // 経由地があるとき：現場までの合計（経由地を回った場合）
+      if (dest.wp) {
+        const tot = remainingTotal(p);
+        const goal = S.target ? '現場まで（経由地経由）' : '最後の経由地まで';
+        setText('dTotal', `${goal} 合計 ${(tot / 1000).toFixed(1)} km${fast ? ' ／ ETE ' + fmtSec(Math.round(tot / spd)) + '（' + hm(Date.now() + tot / spd * 1000) + '着）' : ''}`);
+      } else setText('dTotal', '');
     } else {
       ['dKm', 'dNm'].forEach((id) => setText(id, '--.--'));
-      setText('dBrg', '---'); setText('dCard', t ? '自機位置待ち' : '現場未設定'); setText('dRel', '');
-      setText('dEte', '--:--'); setText('dEta', '--:--');
+      setText('dBrg', '---'); setText('dCard', dest ? '自機位置待ち' : '現場未設定'); setText('dRel', '');
+      setText('dEte', '--:--'); setText('dEta', '--:--'); setText('dTotal', '');
     }
+    // 経由地一覧の距離表示（一覧は作り直さず文字だけ更新）
+    if (p) S.wps.forEach((w) => {
+      const el = document.getElementById('wpd-' + w.id);
+      if (el) { const d = Geo.inverse(p.lat, p.lon, w.lat, w.lon); el.textContent = `${(d.distance / 1000).toFixed(1)}km / ${fmtBrg(d.bearing)}`; }
+    });
 
     // 高度
     const alt = p && valid(p.alt) ? p.alt : null;
@@ -938,6 +1167,7 @@
    * ========================================================= */
   let map = null, tileLayers = {}, curLayer = null;
   let tgMarker = null, oldMarker = null, routeLine = null, routeCase = null, oldLine = null;
+  let planLine = null, wpLayer = null, wpSig = '';
   let simTapArmed = false, navBusy = false;
 
   function loadCSS(href) {
@@ -982,6 +1212,7 @@
     L.control.scale({ imperial: false, maxWidth: 160 }).addTo(map);
     Object.keys(TILES).forEach((k) => { tileLayers[k] = L.tileLayer(TILES[k].url, TILES[k].opt); });
     setLayer(S.layer);
+    wpLayer = L.layerGroup().addTo(map);
     buildRing();
 
     // ドラッグで自由にスクロール → 追従OFF（「現在位置に戻る」で復帰）
@@ -1062,14 +1293,40 @@
       map.removeLayer(oldMarker); map.removeLayer(oldLine); oldMarker = oldLine = null;
     }
 
-    // 直線ルート（測地線・赤）
-    if (p && t) {
-      const pts = Geo.greatCirclePoints(p.lat, p.lon, t.lat, t.lon, 48);
+    // 直線ルート（測地線・赤）：自機 → 次の目的地（経由地 or 現場）
+    const dest = navDest();
+    if (p && dest) {
+      const pts = Geo.greatCirclePoints(p.lat, p.lon, dest.lat, dest.lon, 48);
       if (!routeLine) {
         routeCase = L.polyline(pts, { color: '#ffffff', weight: 10, opacity: 0.55, interactive: false }).addTo(map);
         routeLine = L.polyline(pts, { color: '#ff2a2a', weight: 5, opacity: 0.95, interactive: false }).addTo(map);
       } else { routeCase.setLatLngs(pts); routeLine.setLatLngs(pts); }
     } else if (routeLine) { map.removeLayer(routeLine); map.removeLayer(routeCase); routeLine = routeCase = null; }
+
+    // その先の予定経路（次の目的地 → … → 現場）：赤の破線
+    const rest = remainingRoute();
+    if (rest.length >= 2) {
+      if (!planLine) planLine = L.polyline(rest, { color: '#ff2a2a', weight: 3, opacity: 0.85, dashArray: '10 8', interactive: false }).addTo(map);
+      else planLine.setLatLngs(rest);
+    } else if (planLine) { map.removeLayer(planLine); planLine = null; }
+
+    // 経由地マーカー（番号付き：青=通過点、橙=立寄り点、灰=完了）
+    const act = wpActive();
+    const sig = JSON.stringify(S.wps.map((w) => [w.id, w.lat, w.lon, w.kind, w.done, w.name, w === act]));
+    if (sig !== wpSig) {
+      wpSig = sig;
+      wpLayer.clearLayers();
+      S.wps.forEach((w, i) => {
+        const cls = `wp-ic ${w.kind}${w.done ? ' done' : ''}${w === act ? ' act' : ''}`;
+        const m = L.marker([w.lat, w.lon], {
+          icon: L.divIcon({ className: 'wp-icon', html: `<div class="${cls}">${i + 1}</div>`, iconSize: [36, 36], iconAnchor: [18, 18] }),
+          zIndexOffset: w === act ? 700 : 300, keyboard: false, interactive: false,
+        });
+        m.bindTooltip(`WP${i + 1}${w.name ? ' ' + esc(w.name) : ''}${w.kind === 'stop' ? '（立寄り）' : ''}`,
+          { permanent: true, direction: 'right', offset: [18, 0], className: 'map-label' + (w.done ? ' map-label-done' : '') });
+        wpLayer.addLayer(m);
+      });
+    }
 
     // ナビ表示（自機を画面中央より少し下に固定）
     if (S.follow && p) navView(true);
@@ -1226,18 +1483,20 @@
       ring.hdgLine.style.display = '';
     } else ring.hdgLine.style.display = 'none';
 
-    // 現場方位のマーク（リング外側の赤三角）と数値
-    const t = S.target;
+    // 次の目的地（経由地 or 現場）の方位マーク（リング外側の赤三角）と数値
+    const t = navDest();
     if (t) {
       const inv = Geo.inverse(p.lat, p.lon, t.lat, t.lon);
       const a = north + inv.bearing;
       ring.tgtBug.setAttribute('d', 'M0 2 L-13 -20 L13 -20 Z');
       ring.tgtBug.setAttribute('transform', `translate(${pt(inv.bearing, R)[0]} ${pt(inv.bearing, R)[1]}) rotate(${a}) translate(0 -2)`);
       const [bx, by] = pt(inv.bearing, R + 40);
-      const w = 118, h = 36;
+      const label = `${t.label} ${fmtBrg(inv.bearing)}`;
+      const w = Math.max(118, label.length * 15 + 20), h = 36;
       set(ring.tgtRect, { x: bx - w / 2, y: by - h / 2, width: w, height: h });
       set(ring.tgtText, { x: bx, y: by + 1 });
-      ring.tgtText.textContent = '現場 ' + fmtBrg(inv.bearing);
+      ring.tgtText.textContent = label;
+      ring.tgtBox.classList.toggle('wp', !!t.wp);
       ring.tgtBug.style.display = ring.tgtBox.style.display = '';
     } else ring.tgtBug.style.display = ring.tgtBox.style.display = 'none';
   }
@@ -1266,9 +1525,10 @@
       const y0 = lat2y(t.lat + dLat, z), y1 = lat2y(t.lat - dLat, z);
       for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) set.add(`${z}/${x}/${y}`);
     }
-    // 自機→現場のルート沿い（z9〜13）
-    if (S.pos) {
-      const pts = Geo.greatCirclePoints(S.pos.lat, S.pos.lon, t.lat, t.lon, 80);
+    // 自機→経由地→現場のルート沿い（z9〜13）
+    const legs = (S.pos ? [[S.pos.lat, S.pos.lon]] : []).concat(remainingRoute());
+    for (let k = 1; k < legs.length; k++) {
+      const pts = Geo.greatCirclePoints(legs[k - 1][0], legs[k - 1][1], legs[k][0], legs[k][1], 60);
       for (let z = 9; z <= 13; z++) {
         pts.forEach(([la, lo]) => {
           const x = lon2x(lo, z), y = lat2y(la, z);
@@ -1276,10 +1536,18 @@
         });
       }
     }
+    // 経由地の周辺 半径約1km（z13〜16）
+    S.wps.filter((w) => !w.done).forEach((w) => {
+      const a = 1 / 111.32, b = 1 / (111.32 * Math.cos(Geo.toRad(w.lat)));
+      for (let z = 13; z <= 16; z++) {
+        for (let x = lon2x(w.lon - b, z); x <= lon2x(w.lon + b, z); x++)
+          for (let y = lat2y(w.lat + a, z); y <= lat2y(w.lat - a, z); y++) set.add(`${z}/${x}/${y}`);
+      }
+    });
     const list = Array.from(set);
     const name = { std: '地理院 標準地図', photo: '航空写真', osm: 'OpenStreetMap' }[S.layer];
     const ok = await confirmModal('地図を端末に保存しますか？', `
-      表示中の「${name}」を、現場周辺（半径約3km）${S.pos ? 'と現在地からのルート沿い' : ''}の
+      表示中の「${name}」を、現場周辺（半径約3km）${S.wps.some((w) => !w.done) ? '・経由地の周辺' : ''}${S.pos ? '・現在地からのルート沿い' : ''}の
       <b>${list.length}枚</b>保存します。<br><span class="small muted">通信が安定している地上で実行してください。他の地図種別は切り替えてから再度実行してください。</span>`, '保存開始');
     if (!ok) return;
     const btn = $('cacheBtn');
@@ -1320,12 +1588,14 @@
     if (sim.lat == null) return;
     if (!sim.running) { simEmit(0); return; }
     let ms = (parseFloat($('simSpeed').value) || 0) / MS2KT;
-    const t = S.target;
+    const t = navDest(); // 次の経由地 → 現場の順に自動飛行
     if ($('simAuto').checked && t) {
       const inv = Geo.inverse(sim.lat, sim.lon, t.lat, t.lon);
       if (inv.distance <= Math.max(ms, 1)) {
-        sim.lat = t.lat; sim.lon = t.lon; simStop(); simEmit(0);
-        toast('現場上空に到着しました（模擬）');
+        sim.lat = t.lat; sim.lon = t.lon;
+        if (t.wp && t.wp.kind === 'pass') { simEmit(ms); return; } // 通過点はそのまま次へ
+        simStop(); simEmit(0);
+        toast(t.wp ? `${t.label}（立寄り点）上空に到着しました（模擬）` : '現場上空に到着しました（模擬）');
         return;
       }
       sim.hdg = inv.bearing;
@@ -1482,7 +1752,20 @@
    * イベント登録
    * ========================================================= */
   function bind() {
-    $('editBtn').onclick = openEdit;
+    $('editBtn').onclick = () => openEdit('target');
+    $('modeTarget').onclick = () => setFormMode('target');
+    $('modeWp').onclick = () => setFormMode('wp');
+    $('wpAddBtn').onclick = () => openEdit('wp');
+    $('wpClearBtn').onclick = wpClear;
+    $('wpList').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act]');
+      if (b && !b.disabled) wpAction(b.dataset.act, b.dataset.id);
+    });
+    $('wpRadius').value = String(S.wpRadius);
+    $('wpRadius').addEventListener('change', (e) => {
+      S.wpRadius = parseFloat(e.target.value) || 0.5; LS.set('wpRadius', S.wpRadius);
+      toast(`通過判定を ${S.wpRadius} km にしました`);
+    });
     $('cancelEditBtn').onclick = closeEdit;
     $('clearInputBtn').onclick = () => { clearDMS(); clearDD(); clearSearch(); updatePreview(); focusField('latD'); };
     $('targetForm').addEventListener('submit', (e) => { e.preventDefault(); applyPending(); });
@@ -1573,6 +1856,7 @@
     setLayer(S.layer);
     renderTarget();
     renderPts();
+    renderWps();
     if (!S.target) openEdit();
     else if (!S.target.elev || S.target.elev.status !== 'ok') fetchElevation();
 

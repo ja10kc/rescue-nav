@@ -345,3 +345,50 @@ body {
 .iss-title { font-weight: 800; margin-top: 10px; font-size: 16px; }
 .iss-err .iss-title { color: var(--bad); } .iss-warn .iss-title { color: var(--warn); }
 .iss { margin: 4px 0 0; padding-left: 20px; font-size: 14px; line-height: 1.5; }
+
+/* ---------- 入力モード（現場／経由地） ---------- */
+.mode-row { display: grid; grid-template-columns: 1fr 1fr; border: 2px solid var(--line); border-radius: 12px; overflow: hidden; }
+.mode-btn { min-height: 52px; border: 0; background: var(--panel2); color: var(--text); font: inherit; font-weight: 800; font-size: 17px; }
+.mode-btn + .mode-btn { border-left: 2px solid var(--line); }
+#modeTarget.active { background: var(--route); color: #fff; }
+#modeWp.active { background: #2f6fde; color: #fff; }
+
+/* ---------- 経由地 ---------- */
+.wp-total { color: var(--accent); font-weight: 800; }
+.tile-dist.wp-mode { border-color: #2f6fde; }
+.wp-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--panel2); border: 2px solid var(--line); }
+.wp-now b { font-size: 20px; }
+.wp-now.near { border-color: var(--warn); }
+.wp-near { width: 100%; color: var(--warn); font-weight: 800; font-size: 16px; animation: pulse 1.2s infinite; }
+.btn-row.three { grid-template-columns: 1fr 1.2fr 1fr; }
+.wp-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.wp-item { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 6px; padding: 6px; border-radius: 10px; border: 2px solid var(--line); background: var(--panel2); }
+.wp-item.act { border-color: var(--go); }
+.wp-item.done { opacity: .5; }
+.wp-item.goal { grid-template-columns: auto 1fr; border-style: dashed; }
+.wp-no { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; color: #fff; border: 2px solid #fff; }
+.wp-no.pass { background: #2f6fde; } .wp-no.stop { background: #e07b00; border-radius: 8px; } .wp-no.goal { background: var(--route); font-size: 14px; }
+.wp-main { display: grid; text-align: left; min-width: 0; background: none; border: 0; color: var(--text); font: inherit; padding: 2px; }
+.wp-name { font-weight: 800; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wp-sub { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.wp-kind { font: inherit; font-size: 13px; font-weight: 800; padding: 6px 8px; border-radius: 8px; border: 0; color: #fff; white-space: nowrap; min-height: 36px; }
+.wp-kind.pass { background: #2f6fde; } .wp-kind.stop { background: #e07b00; }
+.wp-now .wp-kind { min-height: 0; padding: 2px 8px; }
+.wp-tools { display: flex; gap: 4px; }
+.wp-tools .btn-mini { min-width: 36px; min-height: 36px; font-size: 15px; }
+.btn-mini.danger { color: var(--bad); }
+.btn-mini:disabled { opacity: .35; }
+.wp-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+.wp-radius { font-size: 14px; font-weight: 700; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.wp-radius select { font: inherit; font-size: 16px; padding: 8px; border-radius: 8px; background: var(--panel2); color: var(--text); border: 2px solid var(--line); }
+
+/* 地図上の経由地マーカー */
+.wp-icon { width: 36px; height: 36px; }
+.wp-ic { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 18px;
+  color: #fff; border: 3px solid #fff; border-radius: 50%; box-shadow: 0 0 0 2px rgba(0,0,0,.6); }
+.wp-ic.pass { background: #2f6fde; }
+.wp-ic.stop { background: #e07b00; border-radius: 9px; }
+.wp-ic.done { background: #7d8794; opacity: .7; }
+.wp-ic.act { box-shadow: 0 0 0 3px #19c37d, 0 0 12px #19c37d; }
+.map-label-done { opacity: .6; }
+.rg-box.wp rect { fill: #2f6fde; }
