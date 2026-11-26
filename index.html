@@ -47,6 +47,9 @@
           <h2>救助現場</h2>
           <span id="targetSetAt" class="muted small"></span>
         </div>
+        <div class="btn-row route-row">
+          <button id="routeQrBtn" class="btn btn-lg route-btn" type="button">📷 ブリーフィングのルートをQRで読込</button>
+        </div>
 
         <!-- 確定済み表示（折りたたみ状態） -->
         <div id="targetView">
@@ -310,6 +313,26 @@
       <div id="mapTapHint" class="map-hint" hidden>地図をタップして自機の位置を指定</div>
     </section>
   </main>
+
+  <!-- ブリーフィングのルートQR読み取り -->
+  <div id="qrModal" class="qr-modal" hidden>
+    <div class="qr-box" role="dialog" aria-modal="true" aria-label="ルートQRの読み取り">
+      <div class="qr-head">
+        <b>ブリーフィングのルートQRを読み込む</b>
+        <button id="qrClose" class="btn" type="button">✕ 閉じる</button>
+      </div>
+      <div class="qr-view">
+        <video id="qrVideo" playsinline muted autoplay></video>
+        <div class="qr-frame"></div>
+      </div>
+      <div id="qrMsg" class="qr-msg">カメラを起動しています…</div>
+      <details id="qrPaste" class="qr-paste">
+        <summary>カメラが使えない場合：貼り付けで読み込む</summary>
+        <textarea id="qrPasteText" rows="3" spellcheck="false" autocapitalize="off" placeholder="hb1:… または QRコードのURL全体を貼り付け"></textarea>
+        <button id="qrPasteBtn" class="btn btn-go btn-lg" type="button">貼り付けた内容を読み込む</button>
+      </details>
+    </div>
+  </div>
 
   <!-- 確認ダイアログ -->
   <div id="modal" class="modal" hidden>

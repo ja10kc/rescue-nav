@@ -773,6 +773,189 @@
     if (showNext) fb.textContent = `次へ ▶（${wpTitle(act)} 完了）`;
   }
 
+  /* =========================================================
+   * ブリーフィングソフトからのルート受け取り（iPad連携仕様 hb1 / v=1）
+   *   ・アプリ内カメラでQRを読み取る（ホーム画面アプリにそのまま反映される）
+   *   ・予備：貼り付け（"hb1:…" または QRのURL全体）
+   *   ・URLの #hb1=… （Safariで開いた場合・PCでの確認用）
+   *   データはURLのフラグメントのみで受け渡し、サーバーへは送信しない
+   * ========================================================= */
+  const JSQR_SRC = 'jsQR.js';
+  const ROUTE_KIND = { B: '出発拠点', W: '経由地', S: '救助現場' };
+
+  /** 仕様書 4章の参考コードに準拠。hb1が無ければ null、不正なら例外 */
+  function readHb1(input) {
+    const m = String(input || '').match(/hb1[=:]([A-Za-z0-9_-]+)/);
+    if (!m) return null;
+    let obj;
+    try {
+      let b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      obj = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (e) {
+      throw new Error('データが壊れているか、途中で切れています。もう一度読み取ってください');
+    }
+    if (!obj || obj.v !== 1) throw new Error(`対応していない形式です（形式バージョン：${obj && obj.v != null ? esc(String(obj.v)) : '不明'}）。ブリーフィングソフトとアプリの版を確認してください`);
+    if (!Array.isArray(obj.p) || obj.p.length < 2) throw new Error('ルートの地点が足りません（2地点以上が必要です）');
+    const points = obj.p.map((it, i) => {
+      const [kind, name, la, lo] = Array.isArray(it) ? it : [];
+      const lat = Number(la), lon = Number(lo);
+      if (!['B', 'W', 'S'].includes(kind) || la === null || lo === null || !isFinite(lat) || !isFinite(lon) ||
+        Math.abs(lat) > 90 || Math.abs(lon) > 180) throw new Error(`地点 ${i + 1} のデータが不正です`);
+      return { order: i + 1, kind, name: String(name == null ? '' : name).slice(0, 60), lat, lon };
+    });
+    if (points[0].kind !== 'B' || points[points.length - 1].kind !== 'S') throw new Error('ルートの並びが不正です（先頭は出発拠点、末尾は救助現場である必要があります）');
+    if (points.slice(1, -1).some((p) => p.kind !== 'W')) throw new Error('ルートの並びが不正です（途中は経由地である必要があります）');
+    return { createdAt: obj.t, points };
+  }
+
+  /** 作成日時：ブリーフィングソフトが書いた日本時間のまま表示（端末の時刻設定に左右されない） */
+  function fmtCreated(t) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(t || ''));
+    if (m) return `${m[1]}/${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+    return t ? esc(String(t)) : '不明';
+  }
+
+  /** 受信内容を表示して確認 → 現場・経由地に反映 */
+  async function confirmRoute(route) {
+    const ws = route.points.filter((p) => p.kind === 'W');
+    if (ws.length > WP_MAX) {
+      infoModal('経由地が多すぎます', `受信したルートには経由地が <b>${ws.length}か所</b> あります。このアプリで設定できるのは最大 ${WP_MAX}か所です。<br>ブリーフィングソフトで経由地を減らしてから、もう一度QRを読み取ってください。`);
+      return;
+    }
+    const created = fmtCreated(route.createdAt);
+    const rows = route.points.map((p) => `<tr class="rk-${p.kind}">
+        <td class="num">${p.order}</td><td><span class="rk-badge rk-${p.kind}">${ROUTE_KIND[p.kind]}</span></td>
+        <td><b>${esc(p.name || '（名称なし）')}</b><div class="small mono">${Geo.formatDD(p.lat)}, ${Geo.formatDD(p.lon)}<br>${Geo.formatDMS(p.lat, true)} ${Geo.formatDMS(p.lon, false)}</div></td></tr>`).join('');
+    const replacing = (S.target || S.wps.length)
+      ? `<div class="pv-memo" style="margin-top:8px">今の救助現場${S.target && S.target.name ? '（' + esc(S.target.name) + '）' : ''}と経由地${S.wps.length ? S.wps.length + 'か所' : ''}は、このルートに置き換わります。</div>` : '';
+    const ok = await confirmModal('ブリーフィングのルートを受信しました', `
+      <div>作成日時：<b>${created}</b>　地点数：<b>${route.points.length}</b>（経由地 ${ws.length}か所）</div>
+      <table class="pts-table route-table">${rows}</table>
+      ${replacing}
+      <div class="small muted" style="margin-top:6px">出発拠点は確認用の表示のみで、誘導先にはなりません。</div>`, 'このルートを設定する');
+    if (!ok) return;
+    applyRoute(route);
+  }
+
+  function applyRoute(route) {
+    const site = route.points[route.points.length - 1];
+    const created = fmtCreated(route.createdAt);
+    S.wps = route.points.filter((p) => p.kind === 'W').map((p, i) => ({
+      id: Date.now().toString(36) + i + Math.random().toString(36).slice(2, 5),
+      lat: p.lat, lon: p.lon, name: p.name || '', note: '',
+      kind: /ランデブー|ＲＰ|RP|揚収|場外|ヘリポート|立寄/i.test(p.name || '') ? 'stop' : 'pass', done: false,
+    }));
+    S.wpNear = null;
+    saveWps();
+    if (S.editing) closeEdit();
+    setTarget(site.lat, site.lon, { pushCurrent: true, meta: { name: site.name || '救助現場', note: `ブリーフィングのルート（${created} 作成）から設定` } });
+    wpChanged();
+    toast(`ルートを設定しました（経由地 ${S.wps.length}か所 → ${site.name || '救助現場'}）`, 4000);
+  }
+
+  /* ---------- アプリ内カメラでQRを読み取る ---------- */
+  const qr = { stream: null, raf: 0, last: 0, canvas: null, msgAt: 0 };
+  function qrMsg(text, cls) {
+    const el = $('qrMsg');
+    el.textContent = text;
+    el.className = 'qr-msg' + (cls ? ' ' + cls : '');
+  }
+  async function openScanner() {
+    $('qrModal').hidden = false;
+    $('qrPasteText').value = '';
+    qrMsg('カメラを起動しています…');
+    try { if (!window.jsQR) await loadJS(JSQR_SRC); } catch (e) {
+      qrMsg('QR読み取りの部品を読み込めませんでした。下の「貼り付けで読み込む」を使ってください。', 'err');
+      $('qrPaste').open = true; return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      qrMsg('この環境ではカメラを使えません。下の「貼り付けで読み込む」を使ってください。', 'err');
+      $('qrPaste').open = true; return;
+    }
+    try {
+      qr.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      });
+    } catch (e) {
+      qrMsg(e && e.name === 'NotAllowedError'
+        ? 'カメラの使用が許可されていません。iPadの「設定」→「Safari」→「カメラ」を「確認」または「許可」にしてから、もう一度お試しください。'
+        : 'カメラを起動できませんでした。下の「貼り付けで読み込む」を使ってください。', 'err');
+      $('qrPaste').open = true; return;
+    }
+    if ($('qrModal').hidden) { stopCamera(); return; } // 起動中に閉じられた
+    const v = $('qrVideo');
+    v.srcObject = qr.stream;
+    try { await v.play(); } catch (e) { /* 自動再生は muted なので通常成功 */ }
+    qrMsg('PC画面のQRコードを、枠いっぱいに写してください');
+    qr.canvas = qr.canvas || document.createElement('canvas');
+    cancelAnimationFrame(qr.raf);
+    qr.raf = requestAnimationFrame(scanLoop);
+  }
+  function scanLoop() {
+    qr.raf = requestAnimationFrame(scanLoop);
+    const now = performance.now();
+    if (now - qr.last < 150) return; // 約7回/秒
+    qr.last = now;
+    const v = $('qrVideo');
+    if (!v || v.readyState < 2 || !v.videoWidth) return;
+    // 画面中央の正方形（枠の範囲）を切り出して解析
+    const side = Math.floor(Math.min(v.videoWidth, v.videoHeight) * 0.92);
+    const sx = (v.videoWidth - side) / 2, sy = (v.videoHeight - side) / 2;
+    const sz = Math.min(side, 1100);
+    const c = qr.canvas;
+    if (c.width !== sz) { c.width = sz; c.height = sz; }
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(v, sx, sy, side, side, 0, 0, sz, sz);
+    let code = null;
+    try { code = window.jsQR(ctx.getImageData(0, 0, sz, sz).data, sz, sz, { inversionAttempts: 'dontInvert' }); } catch (e) { /* 次のフレームで再試行 */ }
+    if (code && code.data) onQrText(code.data);
+  }
+  function onQrText(text) {
+    let route;
+    try { route = readHb1(text); } catch (e) {
+      if (performance.now() - qr.msgAt > 1500) { qrMsg('⚠ ' + e.message, 'err'); qr.msgAt = performance.now(); }
+      return;
+    }
+    if (!route) {
+      if (performance.now() - qr.msgAt > 1500) { qrMsg('⚠ ブリーフィングのルートのQRコードではありません', 'err'); qr.msgAt = performance.now(); }
+      return;
+    }
+    if (navigator.vibrate) { try { navigator.vibrate(80); } catch (e) { /* 無視 */ } }
+    closeScanner();
+    confirmRoute(route);
+  }
+  function stopCamera() {
+    cancelAnimationFrame(qr.raf); qr.raf = 0;
+    if (qr.stream) { qr.stream.getTracks().forEach((t) => t.stop()); qr.stream = null; }
+    const v = $('qrVideo');
+    if (v) v.srcObject = null;
+  }
+  function closeScanner() {
+    stopCamera();
+    $('qrModal').hidden = true;
+    $('qrPaste').open = false;
+  }
+  function pasteRoute() {
+    const text = $('qrPasteText').value.trim();
+    let route;
+    try { route = readHb1(text); } catch (e) { qrMsg('⚠ ' + e.message, 'err'); return; }
+    if (!route) { qrMsg('⚠ 「hb1:」で始まる文字列、またはQRコードのURL全体を貼り付けてください', 'err'); return; }
+    closeScanner();
+    confirmRoute(route);
+  }
+
+  /** 起動時・URL変化時：URLの #hb1=… を読み込み、二重取り込みを防ぐためURLから消す */
+  function checkHashRoute() {
+    const h = location.hash || '';
+    if (!/hb1[=:]/.test(h)) return;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* 無視 */ }
+    let route;
+    try { route = readHb1(h); } catch (e) { infoModal('ルートを読み込めません', esc(e.message)); return; }
+    if (route) setTimeout(() => confirmRoute(route), 300);
+  }
+
   function setFormMode(m) {
     S.formMode = m === 'wp' ? 'wp' : 'target';
     const wp = S.formMode === 'wp';
@@ -1843,6 +2026,11 @@
    * ========================================================= */
   function bind() {
     $('editBtn').onclick = () => openEdit('target');
+    // ブリーフィングのルート（QR）
+    $('routeQrBtn').onclick = openScanner;
+    $('qrClose').onclick = closeScanner;
+    $('qrPasteBtn').onclick = pasteRoute;
+    window.addEventListener('hashchange', checkHashRoute);
     $('modeTarget').onclick = () => setFormMode('target');
     $('modeWp').onclick = () => setFormMode('wp');
     $('wpAddBtn').onclick = () => openEdit('wp');
@@ -1950,6 +2138,7 @@
     else if (!S.target.elev || S.target.elev.status !== 'ok') fetchElevation();
 
     setupTileCleanup();
+    checkHashRoute(); // URLの #hb1=… でルートを受け取った場合
     startGPS();
     enableWake();
     setInterval(() => { renderStatus(); renderDash(); }, 1000);

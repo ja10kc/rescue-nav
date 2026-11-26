@@ -400,3 +400,23 @@ body {
   box-shadow: var(--shadow); min-width: 220px; max-width: calc(100% - 280px); font-size: 21px; font-weight: 900;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: pulse 1.4s infinite;
 }
+
+/* ---------- ブリーフィングのルートQR ---------- */
+.route-row { margin: 0 0 8px; }
+.route-btn { background: #2f6fde; color: #fff; border-color: #2f6fde; }
+.qr-modal { position: fixed; inset: 0; z-index: 1900; background: rgba(0,0,0,.82); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.qr-box { width: min(720px, 100%); max-height: 100%; overflow-y: auto; background: var(--panel); border: 2px solid var(--line); border-radius: 16px; padding: 14px; display: grid; gap: 10px; }
+.qr-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 19px; }
+.qr-view { position: relative; width: 100%; aspect-ratio: 4 / 3; max-height: 58vh; background: #000; border-radius: 12px; overflow: hidden; }
+.qr-view video { width: 100%; height: 100%; object-fit: cover; }
+.qr-frame { position: absolute; top: 50%; left: 50%; height: 88%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border: 4px solid #19c37d; border-radius: 14px; box-shadow: 0 0 0 2000px rgba(0,0,0,.35); pointer-events: none; }
+.qr-msg { font-size: 17px; font-weight: 800; text-align: center; }
+.qr-msg.err { color: var(--warn); }
+.qr-paste summary { font-weight: 700; color: var(--muted); cursor: pointer; padding: 4px 0; }
+.qr-paste textarea { width: 100%; margin: 8px 0; font-size: 15px; padding: 8px; border-radius: 10px; border: 2px solid var(--line); background: var(--panel2); color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+.qr-paste .btn { width: 100%; }
+.route-table td { vertical-align: top; }
+.rk-badge { font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 6px; color: #fff; white-space: nowrap; }
+.rk-badge.rk-B { background: #7d8794; } .rk-badge.rk-W { background: #2f6fde; } .rk-badge.rk-S { background: var(--route); }
+tr.rk-B { opacity: .75; }
