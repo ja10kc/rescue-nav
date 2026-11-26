@@ -1411,15 +1411,47 @@
     updateMapObjects();
   }
 
+  /**
+   * 全体表示：自機・残りの経由地・現場がすべて画面に収まるようにする。
+   * 「機首方向が上」で地図が回転していても収まるよう、実際の画面座標で測って合わせる。
+   * 右側のボタン類・上部の地図切替に隠れないよう余白をとる。
+   */
   function fitBoth(silent) {
     if (!map) return;
-    const p = S.pos, t = S.target;
-    if (p && t) {
-      if (S.follow && !silent) setFollow(false);
-      map.fitBounds(L.latLngBounds([[p.lat, p.lon], [t.lat, t.lon]]), { padding: [80, 80], maxZoom: 15 });
-    } else if (t) map.setView([t.lat, t.lon], 13);
-    else if (p) map.setView([p.lat, p.lon], 12);
-    else if (!silent) toast('自機位置・現場座標がありません');
+    const pts = [];
+    if (S.pos) pts.push([S.pos.lat, S.pos.lon]);
+    S.wps.filter((w) => !w.done).forEach((w) => pts.push([w.lat, w.lon]));
+    if (S.target) pts.push([S.target.lat, S.target.lon]);
+    if (!pts.length) { if (!silent) toast('自機位置・現場座標がありません'); return; }
+    if (S.follow && !silent && pts.length > 1) setFollow(false);
+    if (pts.length === 1) { map.setView(pts[0], S.pos && !S.target ? 12 : 13); return; }
+    fitPoints(pts, 15);
+  }
+  function fitPoints(pts, maxZoom) {
+    const size = map.getSize();
+    const pad = { l: 70, r: Math.min(190, size.x * 0.28), t: 76, b: 120 }; // 下は「現在位置に戻る」ボタンの分
+    const availW = Math.max(80, size.x - pad.l - pad.r), availH = Math.max(80, size.y - pad.t - pad.b);
+    const box = () => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      pts.forEach((ll) => { const c = map.latLngToContainerPoint(ll); x0 = Math.min(x0, c.x); x1 = Math.max(x1, c.x); y0 = Math.min(y0, c.y); y1 = Math.max(y1, c.y); });
+      return { w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+    };
+    // ① 中心に寄せて、今の倍率での広がりを測る
+    let lat = 0, lon = 0;
+    pts.forEach(([a, b]) => { lat += a; lon += b; });
+    map.setView([lat / pts.length, lon / pts.length], map.getZoom(), { animate: false });
+    const b0 = box();
+    // ② 余白の内側に収まる倍率（整数）を求める
+    const z0 = map.getZoom();
+    let z = Math.floor(z0 + Math.log2(Math.min(availW / b0.w, availH / b0.h)));
+    z = Math.max(map.getMinZoom() || 2, Math.min(maxZoom || 15, z));
+    map.setView(map.getCenter(), z, { animate: false });
+    // ③ 点の集まりの中心が「余白の内側の中心」に来るようずらす
+    const b1 = box();
+    const want = L.point(pad.l + availW / 2, pad.t + availH / 2);
+    const shift = L.point(size.x / 2 + (b1.cx - want.x), size.y / 2 + (b1.cy - want.y));
+    map.setView(map.containerPointToLatLng(shift), z, { animate: false });
+    drawRing();
   }
 
   /* ---------- 方位リング（自機中心・10°ごとに数字、北=360） ---------- */
