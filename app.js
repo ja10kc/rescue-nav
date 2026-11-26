@@ -17,6 +17,7 @@
   const MS2KMH = 3.6;         // m/s → km/h
   const M2FT = 3.28084;
   const MIN_SPEED_MS = 5 / MS2KT; // 5kt未満はETE計算しない（ホバリング等）
+  const OVERHEAD_M = 10;          // この距離以内は「直上」（方位が定まらないため数値の代わりに「直上」と表示）
   const HIST_MAX = 8;
   const ELEV_URL = (lat, lon) =>
     `https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon=${lon.toFixed(6)}&lat=${lat.toFixed(6)}&outtype=JSON`;
@@ -765,6 +766,11 @@
     }).join('') + (S.target ? `<li class="wp-item goal"><span class="wp-no goal">現</span><span class="wp-main"><span class="wp-name">現場${S.target.name ? '（' + esc(S.target.name) + '）' : ''}</span><span class="wp-sub">最終目的地</span></span></li>` : '');
     $('wpClearBtn').disabled = !n;
     $('wpAddBtn').disabled = n >= WP_MAX;
+    // 立寄り点の到着圏内では、地図上に大きな「次へ」ボタンを出す（押すと消える）
+    const fb = $('wpNextFloat');
+    const showNext = !!(act && S.wpNear === act.id);
+    fb.hidden = !showNext;
+    if (showNext) fb.textContent = `次へ ▶（${wpTitle(act)} 完了）`;
   }
 
   function setFormMode(m) {
@@ -1106,9 +1112,10 @@
       const km = inv.distance / 1000;
       setText('dKm', km.toFixed(2));
       setText('dNm', (inv.distance / Geo.M_PER_NM).toFixed(2));
-      setText('dBrg', inv.distance < 1 ? '---' : fmtBrg(inv.bearing));
+      const overhead = inv.distance <= OVERHEAD_M;
+      setText('dBrg', overhead ? '---' : fmtBrg(inv.bearing));
       const card = Geo.cardinal(inv.bearing);
-      setText('dCard', inv.distance < 1 ? '--' : `${card}（${CARD_JA[card]}）`);
+      setText('dCard', overhead ? `${dest.label}の直上` : `${card}（${CARD_JA[card]}）`);
       // 現在の進行方位（指示方位との比較用）
       setText('dRel', valid(p.heading) ? `現針路 ${fmtBrg(p.heading)}` : '');
       const fmtSec = (sec) => { const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s2 = sec % 60; return h > 0 ? `${h}:${pad2(m)}:${pad2(s2)}` : `${pad2(m)}:${pad2(s2)}`; };
@@ -1487,11 +1494,15 @@
     const t = navDest();
     if (t) {
       const inv = Geo.inverse(p.lat, p.lon, t.lat, t.lon);
+      // 真上（10m以内）では方位が定まらないため、直前の方位に三角を残し、札は「直上」と表示
+      const overhead = inv.distance <= OVERHEAD_M;
+      if (!overhead || ring.lastBrg == null) ring.lastBrg = inv.bearing;
+      inv.bearing = ring.lastBrg;
       const a = north + inv.bearing;
       ring.tgtBug.setAttribute('d', 'M0 2 L-13 -20 L13 -20 Z');
       ring.tgtBug.setAttribute('transform', `translate(${pt(inv.bearing, R)[0]} ${pt(inv.bearing, R)[1]}) rotate(${a}) translate(0 -2)`);
       const [bx, by] = pt(inv.bearing, R + 40);
-      const label = `${t.label} ${fmtBrg(inv.bearing)}`;
+      const label = overhead ? `${t.label} 直上` : `${t.label} ${fmtBrg(inv.bearing)}`;
       const w = Math.max(118, label.length * 15 + 20), h = 36;
       set(ring.tgtRect, { x: bx - w / 2, y: by - h / 2, width: w, height: h });
       set(ring.tgtText, { x: bx, y: by + 1 });
@@ -1512,11 +1523,8 @@
   async function cacheTiles() {
     const t = S.target;
     if (!t) { toast('先に現場座標を設定してください'); return; }
-    if (S.layer === 'osm') {
-      infoModal('OSMは一括保存できません', 'OpenStreetMapのタイル利用規約では一括ダウンロードが禁止されています。<br>「地理院 標準」または「航空写真」に切り替えてから保存してください。');
-      return;
-    }
-    const tpl = TILES[S.layer].url;
+    // 地理院 標準地図と航空写真の両方を保存（OSMは利用規約により一括保存しない）
+    const LAYERS = [['std', '地理院 標準地図'], ['photo', '航空写真']];
     const set = new Set();
     // 現場周辺 半径約3km（z10〜16）
     const dLat = 3 / 111.32, dLon = 3 / (111.32 * Math.cos(Geo.toRad(t.lat)));
@@ -1544,27 +1552,56 @@
           for (let y = lat2y(w.lat + a, z); y <= lat2y(w.lat - a, z); y++) set.add(`${z}/${x}/${y}`);
       }
     });
-    const list = Array.from(set);
-    const name = { std: '地理院 標準地図', photo: '航空写真', osm: 'OpenStreetMap' }[S.layer];
+    const tiles = Array.from(set);
+    const list = [];
+    LAYERS.forEach(([k]) => tiles.forEach((zxy) => list.push(k + '/' + zxy)));
     const ok = await confirmModal('地図を端末に保存しますか？', `
-      表示中の「${name}」を、現場周辺（半径約3km）${S.wps.some((w) => !w.done) ? '・経由地の周辺' : ''}${S.pos ? '・現在地からのルート沿い' : ''}の
-      <b>${list.length}枚</b>保存します。<br><span class="small muted">通信が安定している地上で実行してください。他の地図種別は切り替えてから再度実行してください。</span>`, '保存開始');
+      「${LAYERS.map((l) => l[1]).join('」と「')}」の両方を、現場周辺（半径約3km）${S.wps.some((w) => !w.done) ? '・経由地の周辺' : ''}${S.pos ? '・現在地からのルート沿い' : ''}について
+      <b>${list.length}枚</b>（各${tiles.length}枚）保存します。<br>
+      <span class="small muted">通信が安定している地上で実行してください。保存した地図は、アプリを終了すると削除されます。</span>`, '保存開始');
     if (!ok) return;
     const btn = $('cacheBtn');
     btn.disabled = true;
+    const total = list.length;
     let done = 0, fail = 0;
     const worker = async () => {
       while (list.length) {
-        const [z, x, y] = list.shift().split('/');
-        try { await fetch(tileUrl(tpl, z, x, y), { mode: 'no-cors' }); } catch (e) { fail++; }
+        const [k, z, x, y] = list.shift().split('/');
+        try { await fetch(tileUrl(TILES[k].url, z, x, y), { mode: 'no-cors' }); } catch (e) { fail++; }
         done++;
-        if (done % 5 === 0) btn.textContent = `保存中… ${done}`;
+        if (done % 5 === 0) btn.textContent = `保存中… ${done} / ${total}`;
       }
     };
     await Promise.all([1, 2, 3, 4, 5, 6].map(worker));
     btn.disabled = false;
     btn.textContent = '現場周辺の地図を保存';
-    toast(fail ? `保存完了（${done - fail}枚成功・${fail}枚失敗）` : `地図 ${done}枚を保存しました`, 3500);
+    LS.set('tilesSavedAt', Date.now());
+    toast(fail ? `保存完了（${done - fail}枚成功・${fail}枚失敗）` : `地図 ${done}枚（標準地図・航空写真）を保存しました`, 3500);
+  }
+
+  /* =========================================================
+   * 保存した地図データの削除（アプリ終了時）
+   *   iPadはホーム画面アプリの終了を確実には通知しないため、
+   *   ① 終了の通知（pagehide）が来たらその場で削除
+   *   ② 次回起動時、前回の使用から2時間以上たっていれば削除
+   *   （飛行中にiPadが裏でアプリを閉じて再起動した場合に、地図が消えないようにするため）
+   * ========================================================= */
+  const TILE_CACHE_NAME = 'rescue-nav-tiles';
+  const RESTART_KEEP_MS = 2 * 60 * 60 * 1000;
+  function clearSavedTiles() {
+    try { if ('caches' in window) return caches.delete(TILE_CACHE_NAME); } catch (e) { /* 無視 */ }
+    return Promise.resolve(false);
+  }
+  function setupTileCleanup() {
+    const last = LS.get('alive', 0);
+    let fresh = true;
+    try { fresh = !sessionStorage.getItem('rn_session'); sessionStorage.setItem('rn_session', '1'); } catch (e) { /* 無視 */ }
+    if (fresh && Date.now() - last > RESTART_KEEP_MS) clearSavedTiles();
+    const beat = () => LS.set('alive', Date.now());
+    beat();
+    setInterval(() => { if (document.visibilityState === 'visible') beat(); }, 30000);
+    document.addEventListener('visibilitychange', beat);
+    window.addEventListener('pagehide', (e) => { if (!e.persisted) clearSavedTiles(); });
   }
 
   /* =========================================================
@@ -1778,6 +1815,7 @@
     $('modeWp').onclick = () => setFormMode('wp');
     $('wpAddBtn').onclick = () => openEdit('wp');
     $('wpClearBtn').onclick = wpClear;
+    $('wpNextFloat').onclick = wpNext;
     $('wpList').addEventListener('click', (e) => {
       const b = e.target.closest('[data-act]');
       if (b && !b.disabled) wpAction(b.dataset.act, b.dataset.id);
@@ -1858,7 +1896,6 @@
       $('mapTapHint').textContent = '地図をタップして自機の位置を指定';
       $('mapTapHint').hidden = false;
     };
-    $('simAutoStartBtn').onclick = simAutoStart;
     $('simRunBtn').onclick = simStart;
     $('simStopBtn').onclick = simStop;
     $('simResetBtn').onclick = simReset;
@@ -1880,6 +1917,7 @@
     if (!S.target) openEdit();
     else if (!S.target.elev || S.target.elev.status !== 'ok') fetchElevation();
 
+    setupTileCleanup();
     startGPS();
     enableWake();
     setInterval(() => { renderStatus(); renderDash(); }, 1000);
