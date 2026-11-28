@@ -447,3 +447,16 @@ tr.rk-B { opacity: .75; }
 .air-pop-note { font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 4px; }
 .btn-2line { line-height: 1.25; padding: 6px 8px; }
 .btn-2line small { font-size: 13px; font-weight: 700; opacity: .9; }
+
+/* ---------- 地図で指定中の登録地点 ---------- */
+.rp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.rp-toggle { min-height: 44px; font-size: 15px; }
+.rp-toggle.on { background: var(--go); color: var(--go-text); border-color: var(--go); }
+.rp-legend { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.rp-legend .rp-ic { margin-left: 6px; }
+.rp-icon { width: 28px; height: 28px; }
+.rp-ic { width: 28px; height: 28px; border-radius: 7px; border: 2.5px solid #fff; color: #fff; font-weight: 900; font-size: 15px;
+  display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 1.5px rgba(0,0,0,.55), 0 1px 4px rgba(0,0,0,.6); }
+.rp-ic.sm { width: 20px; height: 20px; font-size: 11px; border-width: 2px; border-radius: 5px; display: inline-flex; }
+.rp-label { font-size: 12px; padding: 1px 5px; }
+.rp-labels-off .rp-label { display: none; }

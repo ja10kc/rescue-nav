@@ -67,6 +67,7 @@
     ptsPrev: LS.get('ptsPrev', null),  // 1つ前の一覧（元に戻す用）
     sel: null,                         // 検索結果・地図で選んだ地点
     mapPick: false,                    // 地図タップで現場を指定中
+    rpShow: LS.get('rpShow', true),    // 地図で指定中に登録地点を表示するか
     wps: LS.get('wps', []),            // 経由地 [{id,lat,lon,name,note,kind:'pass'|'stop',done}]
     wpRadius: LS.get('wpRadius', 0.5), // 通過判定の距離[km]
     wpNear: null,                      // 到着圏内の立寄り点id
@@ -317,7 +318,7 @@
 
   function clearSel() {
     if (!S.sel) return;
-    if (S.sel.src === '地図') removePickMarker();
+    if ((S.sel.src === '地図' || S.sel.src === '登録地点')) removePickMarker();
     S.sel = null;
     document.querySelectorAll('.q-item.sel').forEach((b) => b.classList.remove('sel'));
   }
@@ -430,7 +431,7 @@
   function startMapPick() {
     if (!map) { toast('地図が利用できません（オフラインで地図を読み込めていません）', 3500); return; }
     if (S.mapPick) { // もう一度押す → 指定をやめる
-      if (S.sel && S.sel.src === '地図') { clearSel(); updatePreview(); }
+      if (S.sel && (S.sel.src === '地図' || S.sel.src === '登録地点')) { clearSel(); updatePreview(); }
       stopMapPick();
       return;
     }
@@ -439,7 +440,8 @@
     hideAirInfo();
     if (pickPrevFollow === null) pickPrevFollow = S.follow;
     if (S.follow) setFollow(false); // 指定中は地図を自機に追従させない
-    $('mapTapHint').textContent = '地図をタップして現場を指定（ピンはドラッグで微調整）';
+    $('mapTapHint').textContent = '地図をタップして指定（登録地点の印をタップすると、その地点を選べます）';
+    showRegPoints();
     $('mapTapHint').hidden = false;
     const b = $('mapPickBtn');
     b.textContent = '✖ 地図での指定をやめる';
@@ -453,22 +455,83 @@
     b.textContent = '🗺 地図をタップして指定';
     b.classList.remove('btn-warn');
     removePickMarker();
+    hideRegPoints();
     if (was && pickPrevFollow) setFollow(true); // 指定前に追従していたら元に戻す
     pickPrevFollow = null;
   }
-  function pickAt(lat, lon) {
+  const PICK_COLOR = '#d81b9a'; // 指定ピン：赤紫（登録地点の緑・現場の赤と区別）
+  function pickAt(lat, lon, meta) {
     clearDMS(); clearDD();
     if ($('q').value) { $('q').value = ''; gsi = { q: '', state: 'idle', list: [] }; renderSearch(); }
-    S.sel = { lat, lon, name: '', note: '', pref: '', type: '', src: '地図' };
+    const m = meta || {};
+    S.sel = { lat, lon, name: m.name || '', note: m.note || '', pref: m.pref || '', type: m.type || '', src: meta ? '登録地点' : '地図' };
+    const label = m.name ? esc(m.name) : '指定地点';
     if (!pickMarker) {
       pickMarker = L.marker([lat, lon], {
-        icon: L.divIcon({ className: 'tg-icon', html: TG_SVG('#19c37d'), iconSize: [46, 46], iconAnchor: [23, 23] }),
+        icon: L.divIcon({ className: 'tg-icon', html: TG_SVG(PICK_COLOR), iconSize: [46, 46], iconAnchor: [23, 23] }),
         draggable: true, autoPan: true, zIndexOffset: 900, keyboard: false,
-      }).addTo(map).bindTooltip('指定地点', { permanent: true, direction: 'right', offset: [22, 0], className: 'map-label' });
+      }).addTo(map).bindTooltip(label, { permanent: true, direction: 'right', offset: [22, 0], className: 'map-label' });
+      // ドラッグで動かした場合は、登録地点ではなく「地図で指定した位置」として扱う
       pickMarker.on('dragend', () => { const ll = pickMarker.getLatLng(); pickAt(ll.lat, ll.lng); });
-    } else pickMarker.setLatLng([lat, lon]);
+    } else {
+      pickMarker.setLatLng([lat, lon]);
+      pickMarker.setTooltipContent(label);
+    }
     updatePreview();
     $('preview').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  /* ---------- 地図で指定中だけ、登録地点（場外一覧表）を地図に表示 ---------- */
+  const RP_CAT = {
+    hosp: { color: '#1f6fe0', ch: 'H', name: '病院' },
+    air: { color: '#e0202e', ch: '空', name: '空港' },
+    other: { color: '#0f9d58', ch: '場', name: 'その他' },
+  };
+  const RP_LABEL_ZOOM = 12; // この倍率以上で名前を表示（数百件が重ならないように）
+  let rpLayer = null;
+  function rpCategory(p) {
+    const t = `${p.type || ''} ${p.name || ''}`;
+    if (/病院|医療|医大|医科|ホスピタル|メディカル|クリニック|診療所|救命/.test(t)) return 'hosp';
+    if (/空港|飛行場|エアポート|航空基地/.test(t)) return 'air';
+    return 'other';
+  }
+  function showRegPoints() {
+    hideRegPoints();
+    const pts = ptsList();
+    if (!map || !S.mapPick || !S.rpShow || !pts.length) return;
+    rpLayer = L.layerGroup();
+    pts.forEach((p) => {
+      const c = RP_CAT[rpCategory(p)];
+      const mk = L.marker([p.lat, p.lon], {
+        icon: L.divIcon({ className: 'rp-icon', html: `<div class="rp-ic" style="background:${c.color}">${c.ch}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }),
+        zIndexOffset: 400, keyboard: false, riseOnHover: true,
+      });
+      mk.bindTooltip(esc(p.name), { permanent: true, direction: 'right', offset: [14, 0], className: 'map-label rp-label' });
+      mk.on('click', () => { pickAt(p.lat, p.lon, p); toast(`登録地点「${p.name}」を選びました`); });
+      rpLayer.addLayer(mk);
+    });
+    rpLayer.addTo(map);
+    rpZoomLabels();
+  }
+  function hideRegPoints() {
+    if (rpLayer && map) map.removeLayer(rpLayer);
+    rpLayer = null;
+  }
+  function rpZoomLabels() {
+    if (map) map.getContainer().classList.toggle('rp-labels-off', map.getZoom() < RP_LABEL_ZOOM);
+  }
+  function renderRpToggle() {
+    const b = $('rpToggle');
+    if (!b) return;
+    const n = ptsList().length;
+    b.disabled = !n;
+    b.classList.toggle('on', S.rpShow && !!n);
+    b.textContent = !n ? '登録地点：未登録' : S.rpShow ? `登録地点を表示 ON（${n}件）` : '登録地点を表示 OFF';
+  }
+  function toggleRegPoints() {
+    S.rpShow = !S.rpShow; LS.set('rpShow', S.rpShow);
+    renderRpToggle();
+    if (S.rpShow) showRegPoints(); else hideRegPoints();
   }
 
   function selectItem(i) {
@@ -505,6 +568,7 @@
         <div class="pts-prefs">${Object.keys(byPref).map((k) => `<span class="chip">${esc(k)} ${byPref[k]}</span>`).join('')}</div>`;
     }
     $('ptsUndoBtn').disabled = !(S.ptsPrev && S.ptsPrev.points && S.ptsPrev.points.length);
+    renderRpToggle();
     $('ptsExportBtn').disabled = !pts.length;
     if (S.editing) renderSearch();
   }
@@ -1023,7 +1087,7 @@
     }
     S.pending = { lat: r.lat, lon: r.lon };
     if (sel) Object.assign(S.pending, { name: sel.name || '', note: sel.note || '', pref: sel.pref || '', type: sel.type || '', src: sel.src || '' });
-    const fmtName = sel ? (sel.src === '地図' ? '地図で指定' : `検索結果（${sel.src}）`) : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
+    const fmtName = sel ? (sel.src === '地図' ? '地図で指定' : sel.src === '登録地点' ? '地図上の登録地点' : `検索結果（${sel.src}）`) : ({ DD: '10進数', DM: '度分', DMS: '度分秒' }[r.fmt] || '');
     let extra = '';
     if (S.pos) {
       const d0 = Geo.inverse(S.pos.lat, S.pos.lon, r.lat, r.lon);
@@ -1415,7 +1479,7 @@
     // ドラッグで自由にスクロール → 追従OFF（「現在位置に戻る」で復帰）
     window.__rnMap = map; // 動作確認用
     map.on('dragstart', () => { if (S.follow) setFollow(false); });
-    map.on('zoomend', () => { if (S.follow && !navBusy) navView(false); });
+    map.on('zoomend', () => { if (S.follow && !navBusy) navView(false); rpZoomLabels(); });
     map.on('move zoom rotate viewreset resize', drawRing);
     map.on('click', (e) => {
       if (simTapArmed) {
@@ -2302,6 +2366,7 @@
     });
     // 登録地点
     $('mapPickBtn').onclick = startMapPick;
+    $('rpToggle').onclick = toggleRegPoints;
     $('ptsLoadBtn').onclick = () => $('ptsFile').click();
     $('ptsFile').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; importPts(f); });
     $('ptsUndoBtn').onclick = undoPts;
