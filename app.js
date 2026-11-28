@@ -423,7 +423,7 @@
   }
 
   /* ---------- 地図で指定（タップで位置を決め、ピンのドラッグで微調整） ---------- */
-  let pickMarker = null, pickPrevFollow = null;
+  let pickMarker = null, pickPrevFollow = null, pickPrevBearing = null;
   function removePickMarker() {
     if (pickMarker && map) map.removeLayer(pickMarker);
     pickMarker = null;
@@ -441,6 +441,9 @@
     if (pickPrevFollow === null) pickPrevFollow = S.follow;
     if (S.follow) setFollow(false); // 指定中は地図を自機に追従させない
     $('mapTapHint').textContent = '地図をタップして指定（登録地点の印をタップすると、その地点を選べます）';
+    // 地図で指定中は「北が上」に固定（回転による再計算をなくして軽くする・地図と見比べやすくする）
+    if (pickPrevBearing === null && canRotate()) pickPrevBearing = map.getBearing();
+    if (canRotate() && map.getBearing() !== 0) map.setBearing(0);
     showRegPoints();
     $('mapTapHint').hidden = false;
     const b = $('mapPickBtn');
@@ -457,7 +460,8 @@
     removePickMarker();
     hideRegPoints();
     if (was && pickPrevFollow) setFollow(true); // 指定前に追従していたら元に戻す
-    pickPrevFollow = null;
+    else if (was && pickPrevBearing && S.headUp && canRotate()) map.setBearing(pickPrevBearing);
+    pickPrevFollow = null; pickPrevBearing = null;
   }
   const PICK_COLOR = '#d81b9a'; // 指定ピン：赤紫（登録地点の緑・現場の赤と区別）
   function pickAt(lat, lon, meta) {
@@ -487,38 +491,70 @@
     air: { color: '#e0202e', ch: '空', name: '空港' },
     other: { color: '#0f9d58', ch: '場', name: 'その他' },
   };
-  const RP_LABEL_ZOOM = 12; // この倍率以上で名前を表示（数百件が重ならないように）
+  // 軽量化：画面内の地点だけを、画面中心に近い順に最大 RP_MAX 件まで表示する。
+  // 名前は画面内の印が RP_LABEL_MAX 件以下のときだけ表示する（数百件を常時描くと iPad が固まるため）。
+  const RP_MAX = 50, RP_LABEL_MAX = 20;
   let rpLayer = null;
+  const rpMarkers = new Map(); // key -> marker
   function rpCategory(p) {
     const t = `${p.type || ''} ${p.name || ''}`;
     if (/病院|医療|医大|医科|ホスピタル|メディカル|クリニック|診療所|救命/.test(t)) return 'hosp';
     if (/空港|飛行場|エアポート|航空基地/.test(t)) return 'air';
     return 'other';
   }
+  const rpKey = (p) => p.id != null ? String(p.id) : `${p.lat},${p.lon},${p.name}`;
+  function rpMakeMarker(p) {
+    const c = RP_CAT[rpCategory(p)];
+    const mk = L.marker([p.lat, p.lon], {
+      icon: L.divIcon({ className: 'rp-icon', html: `<div class="rp-ic" style="background:${c.color}">${c.ch}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }),
+      zIndexOffset: 400, keyboard: false,
+    });
+    mk.on('click', () => { pickAt(p.lat, p.lon, p); toast(`登録地点「${p.name}」を選びました`); });
+    mk._rpName = p.name;
+    return mk;
+  }
+  function rpRefresh() {
+    if (!rpLayer || !map) return;
+    const bounds = map.getBounds().pad(0.1);
+    const c = map.getCenter();
+    const inView = [];
+    for (const p of ptsList()) if (bounds.contains([p.lat, p.lon])) inView.push(p);
+    // 画面中心に近い順（経度方向の縮みを補正した簡易距離）
+    const k = Math.cos(c.lat * Math.PI / 180);
+    const d2 = (p) => { const dy = p.lat - c.lat, dx = (p.lon - c.lng) * k; return dx * dx + dy * dy; };
+    if (inView.length > RP_MAX) inView.sort((x, y) => d2(x) - d2(y));
+    const shown = inView.slice(0, RP_MAX);
+    const keep = new Set(shown.map(rpKey));
+    for (const [key, mk] of rpMarkers) if (!keep.has(key)) { rpLayer.removeLayer(mk); rpMarkers.delete(key); }
+    const labels = shown.length <= RP_LABEL_MAX;
+    for (const p of shown) {
+      const key = rpKey(p);
+      let mk = rpMarkers.get(key);
+      if (!mk) { mk = rpMakeMarker(p); rpMarkers.set(key, mk); rpLayer.addLayer(mk); }
+      const has = !!mk.getTooltip();
+      if (labels && !has) mk.bindTooltip(esc(mk._rpName), { permanent: true, direction: 'right', offset: [14, 0], className: 'map-label rp-label' });
+      else if (!labels && has) mk.unbindTooltip();
+    }
+    const st = $('rpStat');
+    if (st) {
+      st.hidden = false;
+      st.textContent = !inView.length ? 'この画面内に登録地点はありません'
+        : inView.length > RP_MAX ? `画面内 ${inView.length}件のうち、中心に近い${RP_MAX}件を表示（拡大すると全件出ます）`
+        : `画面内 ${inView.length}件を表示${labels ? '' : '（名前は拡大すると出ます）'}`;
+    }
+  }
   function showRegPoints() {
     hideRegPoints();
-    const pts = ptsList();
-    if (!map || !S.mapPick || !S.rpShow || !pts.length) return;
-    rpLayer = L.layerGroup();
-    pts.forEach((p) => {
-      const c = RP_CAT[rpCategory(p)];
-      const mk = L.marker([p.lat, p.lon], {
-        icon: L.divIcon({ className: 'rp-icon', html: `<div class="rp-ic" style="background:${c.color}">${c.ch}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] }),
-        zIndexOffset: 400, keyboard: false, riseOnHover: true,
-      });
-      mk.bindTooltip(esc(p.name), { permanent: true, direction: 'right', offset: [14, 0], className: 'map-label rp-label' });
-      mk.on('click', () => { pickAt(p.lat, p.lon, p); toast(`登録地点「${p.name}」を選びました`); });
-      rpLayer.addLayer(mk);
-    });
-    rpLayer.addTo(map);
-    rpZoomLabels();
+    if (!map || !S.mapPick || !S.rpShow || !ptsList().length) return;
+    rpLayer = L.layerGroup().addTo(map);
+    map.on('moveend', rpRefresh);
+    rpRefresh();
   }
   function hideRegPoints() {
+    if (map) map.off('moveend', rpRefresh);
     if (rpLayer && map) map.removeLayer(rpLayer);
-    rpLayer = null;
-  }
-  function rpZoomLabels() {
-    if (map) map.getContainer().classList.toggle('rp-labels-off', map.getZoom() < RP_LABEL_ZOOM);
+    rpLayer = null; rpMarkers.clear();
+    const st = $('rpStat'); if (st) st.hidden = true;
   }
   function renderRpToggle() {
     const b = $('rpToggle');
@@ -1479,7 +1515,7 @@
     // ドラッグで自由にスクロール → 追従OFF（「現在位置に戻る」で復帰）
     window.__rnMap = map; // 動作確認用
     map.on('dragstart', () => { if (S.follow) setFollow(false); });
-    map.on('zoomend', () => { if (S.follow && !navBusy) navView(false); rpZoomLabels(); });
+    map.on('zoomend', () => { if (S.follow && !navBusy) navView(false); });
     map.on('move zoom rotate viewreset resize', drawRing);
     map.on('click', (e) => {
       if (simTapArmed) {
@@ -1613,7 +1649,7 @@
     navBusy = true;
     try {
       if (canRotate()) {
-        if (S.headUp) {
+        if (S.headUp && !S.mapPick) { // 地図で指定中は北が上
           if (valid(p.heading) && valid(p.speed) && p.speed >= MIN_SPEED_MS) S.mapHdg = p.heading;
           const want = -(S.mapHdg || 0);
           const diff = Math.abs(((map.getBearing() - want) % 360 + 540) % 360 - 180);

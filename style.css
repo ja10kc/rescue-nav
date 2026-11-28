@@ -459,4 +459,4 @@ tr.rk-B { opacity: .75; }
   display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 1.5px rgba(0,0,0,.55), 0 1px 4px rgba(0,0,0,.6); }
 .rp-ic.sm { width: 20px; height: 20px; font-size: 11px; border-width: 2px; border-radius: 5px; display: inline-flex; }
 .rp-label { font-size: 12px; padding: 1px 5px; }
-.rp-labels-off .rp-label { display: none; }
+#rpStat { margin-top: 4px; }
